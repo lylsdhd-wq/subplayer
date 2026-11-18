@@ -186,29 +186,42 @@
     box-shadow: 0 2px 10px rgba(10, 132, 255, .45); transition: transform .42s var(--ease), width .42s var(--ease); }
   .label { font-size: 12px; color: var(--sub); margin: 0 2px 8px; font-weight: 600; letter-spacing: .5px; }
 
-  /* 操作按钮 */
-  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
-  .act { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px; border-radius: var(--r);
-    background: var(--card); text-align: left; min-height: 78px; }
-  .act .t { font-size: 15px; font-weight: 700; }
-  .act .s { font-size: 12px; color: var(--sub); transition: color .25s; }
-  .act .e { font-size: 20px; line-height: 1; transition: transform .4s var(--ease); }
-  .act.on { background: linear-gradient(135deg, #0a84ff, #5e5ce6); box-shadow: 0 6px 20px rgba(10, 132, 255, .3); }
-  .act.on .s { color: rgba(255, 255, 255, .85); }
-  .act.on .e { transform: rotate(-12deg) scale(1.15); }
-
-  .regen { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; height: 46px; margin-top: 10px;
-    border-radius: 14px; background: transparent; border: 1px solid var(--line); color: var(--sub); font-size: 14px; font-weight: 600; }
-  .regen .spin { display: inline-block; transition: transform .6s var(--ease); }
-  .regen.go .spin { transform: rotate(360deg); }
 
   /* 设置弹层 */
   .mask { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .5); opacity: 0; pointer-events: none; transition: opacity .3s; }
   .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; max-width: 760px; margin: 0 auto;
     background: #1c1c1f; border-radius: 22px 22px 0 0; padding: 8px 18px calc(22px + env(safe-area-inset-bottom));
     transform: translateY(105%); transition: transform .45s var(--ease); max-height: 88vh; overflow: auto; }
-  .sheet-open .mask { opacity: 1; pointer-events: auto; }
-  .sheet-open .sheet { transform: none; }
+  .mask.open { opacity: 1; pointer-events: auto; }
+  .sheet.open { transform: none; }
+  .hd-btns { display: flex; gap: 10px; }
+  #openTools { opacity: 0; transform: scale(.6); pointer-events: none; transition: opacity .3s, transform .45s var(--ease); }
+  .has-video #openTools { opacity: 1; transform: none; pointer-events: auto; }
+  .pill { font-style: normal; font-size: 11px; font-weight: 700; color: #ff9f0a; background: rgba(255,159,10,.15); padding: 2px 8px;
+    border-radius: 99px; margin-left: 6px; vertical-align: 2px; display: inline-block; opacity: 0; transform: scale(.7); transition: opacity .25s, transform .35s var(--ease); }
+  .full-on .pill { opacity: 1; transform: none; }
+
+  /* 选项列表（iOS 分组样式） */
+  .group { margin-top: 18px; background: var(--card2); border-radius: 14px; overflow: hidden; }
+  .item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; text-align: left; position: relative; }
+  .item + .item::before { content: ""; position: absolute; top: 0; left: 58px; right: 0; height: 1px; background: var(--line); }
+  .item:active { background: #2e2e33; transform: none; }
+  .badge { flex: none; width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; color: #fff; }
+  .badge svg { width: 18px; height: 18px; }
+  .txt { flex: 1; min-width: 0; }
+  .txt b { display: block; font-size: 16px; font-weight: 600; }
+  .txt small { display: block; font-size: 12px; color: var(--sub); margin-top: 2px; transition: color .2s; }
+  .chev { flex: none; width: 18px; height: 18px; color: #5a5a62; }
+  .danger b { color: var(--red); }
+  .danger.arm { background: rgba(255,95,87,.12); }
+  .danger.arm small { color: var(--red); }
+  .danger .spin { transition: transform .6s var(--ease); }
+  .danger.go .spin { transform: rotate(360deg); }
+  .sw { flex: none; width: 51px; height: 31px; border-radius: 99px; background: #39393d; position: relative; transition: background .3s var(--ease); }
+  .sw i { position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff;
+    box-shadow: 0 2px 6px rgba(0,0,0,.3); transition: transform .35s var(--ease); }
+  .full-on .sw { background: var(--green); }
+  .full-on .sw i { transform: translateX(20px); }
   .grab { width: 38px; height: 5px; border-radius: 3px; background: #48484e; margin: 2px auto 10px; }
   .sheet h2 { margin: 0 0 6px; font-size: 18px; display: flex; justify-content: space-between; align-items: center; }
   .sheet h2 button { color: var(--accent); font-size: 16px; font-weight: 600; padding: 6px 4px; }
@@ -241,10 +254,15 @@
 <body>
 <header>
   <h1>边看边出字幕</h1>
+  <div class="hd-btns">
+  <button class="icon-btn press" id="openTools" aria-label="字幕选项">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 15h4M14 15h3M7 11h2M12 11h5"/></svg>
+  </button>
   <button class="icon-btn press" id="openSettings" aria-label="设置">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     <span class="dot" id="keyDot" hidden></span>
   </button>
+  </div>
 </header>
 
 <div class="wrap" id="app">
@@ -293,31 +311,46 @@
   </div>
 
   <div class="card reveal d1">
-    <div class="prog-top"><b>字幕进度</b><span id="count">0 / 0</span></div>
+    <div class="prog-top"><b>字幕进度 <em class="pill" id="fullPill">全部生成中</em></b><span id="count">0 / 0</span></div>
     <div id="map" title="点一下跳到那里"><span id="head"></span></div>
     <div id="status"></div>
     <button class="retry press" id="retryBtn"><span class="spin">🔁</span> <span id="retryTxt">重试失败的段</span></button>
     <div class="legend"><span><em style="background:var(--green)"></em>已完成</span><span><em style="background:var(--accent)"></em>识别中</span><span><em style="background:#2a2a2f"></em>待识别</span><span><em style="background:var(--red)"></em>失败</span></div>
   </div>
-
-  <div class="card reveal d2">
-    <div class="label">字幕显示</div>
-    <div class="seg" id="modes">
-      <span class="thumb"></span>
-      <button data-mode="both" class="on">原文 + 翻译</button>
-      <button data-mode="tr">只看翻译</button>
-      <button data-mode="src">只看原文</button>
-    </div>
-  </div>
-
-  <div class="actions reveal d3">
-    <button class="act press" id="fullBtn"><span class="e">⚡</span><span class="t">全部生成</span><span class="s">不用边看边等</span></button>
-    <button class="act press" id="srtBtn"><span class="e">💾</span><span class="t">导出 SRT</span><span class="s">存成字幕文件</span></button>
-  </div>
-  <button class="regen press reveal d3" id="regenBtn"><span class="spin">🔄</span> 重新生成字幕</button>
 </div>
 
 <div class="mask" id="mask"></div>
+<div class="sheet" id="tools" role="dialog" aria-label="字幕选项">
+  <div class="grab"></div>
+  <h2>字幕选项 <button class="sheet-done">完成</button></h2>
+  <div class="label" style="margin-top:12px">显示</div>
+  <div class="seg" id="modes">
+    <span class="thumb"></span>
+    <button data-mode="both" class="on">原文 + 翻译</button>
+    <button data-mode="tr">只看翻译</button>
+    <button data-mode="src">只看原文</button>
+  </div>
+
+  <div class="group">
+    <button class="item press" id="fullBtn" role="switch" aria-checked="false">
+      <span class="badge" style="background:linear-gradient(135deg,#ff9f0a,#ff6a00)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12z"/></svg></span>
+      <span class="txt"><b>全部生成</b><small id="fullSub">不用边看边等，后台一次做完</small></span>
+      <span class="sw"><i></i></span>
+    </button>
+    <button class="item press" id="srtBtn">
+      <span class="badge" style="background:linear-gradient(135deg,#30d158,#0a9e4a)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg></span>
+      <span class="txt"><b>导出 SRT 字幕</b><small>按当前显示方式导出，可导入别的播放器</small></span>
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+  </div>
+
+  <div class="group">
+    <button class="item press danger" id="regenBtn">
+      <span class="badge" style="background:linear-gradient(135deg,#ff5f57,#d70015)"><svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></svg></span>
+      <span class="txt"><b id="regenTitle">重新生成字幕</b><small id="regenSub">清掉这个文件已生成的字幕，从头识别</small></span>
+    </button>
+  </div>
+</div>
 <div class="sheet" id="settings" role="dialog" aria-label="设置">
   <div class="grab"></div>
   <h2>设置 <button id="closeSettings">完成</button></h2>
@@ -361,18 +394,30 @@
   langEl.onchange = () => { ls.set('sub_lang', langEl.value.trim()); syncChips(); };
 
   // 设置弹层
-  const openSheet = () => { document.body.classList.add('sheet-open'); };
-  const closeSheet = () => {
-    document.body.classList.remove('sheet-open');
-    keyEl.onchange(); langEl.onchange();
-    $('keyDot').hidden = !!keyEl.value.trim();
+  let openId = '';
+  const openSheet = (id = 'settings') => {
+    if (openId) closeSheet();
+    openId = id;
+    $(id).classList.add('open'); $('mask').classList.add('open');
+    if (id === 'tools') requestAnimationFrame(moveThumb);
   };
-  $('openSettings').onclick = openSheet;
+  const closeSheet = () => {
+    if (!openId) return;
+    $(openId).classList.remove('open'); $('mask').classList.remove('open');
+    if (openId === 'settings') {
+      keyEl.onchange(); langEl.onchange();
+      $('keyDot').hidden = !!keyEl.value.trim();
+    }
+    openId = '';
+  };
+  $('openSettings').onclick = () => openSheet('settings');
+  $('openTools').onclick = () => openSheet('tools');
   $('closeSettings').onclick = closeSheet;
+  document.querySelectorAll('.sheet-done').forEach(b => b.onclick = closeSheet);
   $('mask').onclick = closeSheet;
   // 下滑关闭
-  (() => {
-    const sh = $('settings'); let y0 = null, dy = 0;
+  document.querySelectorAll('.sheet').forEach(sh => {
+    let y0 = null, dy = 0;
     sh.addEventListener('touchstart', e => { if (sh.scrollTop <= 0) { y0 = e.touches[0].clientY; dy = 0; } }, { passive: true });
     sh.addEventListener('touchmove', e => {
       if (y0 == null) return;
@@ -385,14 +430,14 @@
       if (dy > 90) closeSheet();
       y0 = null;
     });
-  })();
+  });
   function syncChips() {
     document.querySelectorAll('#langChips button').forEach(b => b.classList.toggle('on', b.textContent === langEl.value.trim()));
   }
   document.querySelectorAll('#langChips button').forEach(b => b.onclick = () => { langEl.value = b.textContent; langEl.onchange(); });
   syncChips();
   $('keyDot').hidden = !!keyEl.value;
-  if (!keyEl.value) setTimeout(openSheet, 350);
+  if (!keyEl.value) setTimeout(() => openSheet('settings'), 350);
 
   // toast
   let toastT = 0;
@@ -742,11 +787,9 @@
   const fullBtn = $('fullBtn');
   fullBtn.onclick = () => {
     fullMode = !fullMode;
-    fullBtn.classList.toggle('on', fullMode);
-    fullBtn.querySelector('.e').textContent = fullMode ? '⏸' : '⚡';
-    fullBtn.querySelector('.t').textContent = fullMode ? '正在全部生成' : '全部生成';
-    fullBtn.querySelector('.s').textContent = fullMode ? '点一下改回跟着播放做' : '不用边看边等';
-    toast(fullMode ? '⚡ 后台把整部片都生成好' : '⏸ 改成只跟着播放进度生成');
+    document.body.classList.toggle('full-on', fullMode);
+    fullBtn.setAttribute('aria-checked', fullMode);
+    $('fullSub').textContent = fullMode ? '正在后台把整个文件都生成好' : '不用边看边等，后台一次做完';
     if (nChunks) updateProgress();
   };
 
@@ -794,12 +837,27 @@
     openFile(f, false);
   };
 
+  let armT = 0;
+  const disarm = () => {
+    clearTimeout(armT);
+    $('regenBtn').classList.remove('arm');
+    $('regenTitle').textContent = '重新生成字幕';
+    $('regenSub').textContent = '清掉这个文件已生成的字幕，从头识别';
+  };
   $('regenBtn').onclick = () => {
-    if (!curFile) return;
-    if (!confirm('把这个视频已经生成的字幕全部清掉，从头重新识别？')) return;
+    if (!curFile) return toast('先选一个视频或音频');
     const b = $('regenBtn');
+    if (!b.classList.contains('arm')) { // 第一下：变红确认
+      b.classList.add('arm');
+      $('regenTitle').textContent = '再点一次确认清空';
+      $('regenSub').textContent = '已生成的字幕会全部删除';
+      armT = setTimeout(disarm, 3500);
+      return;
+    }
+    disarm();
     b.classList.remove('go'); void b.offsetWidth; b.classList.add('go');
     openFile(curFile, true);
+    setTimeout(closeSheet, 450);
     toast('🔄 已清掉旧字幕，重新生成中');
   };
 
