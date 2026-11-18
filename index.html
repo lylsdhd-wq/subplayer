@@ -57,6 +57,22 @@
   video { width: 100%; display: block; background: #000; max-height: 70vh; }
   video::cue { font-size: .9em; background: rgba(0, 0, 0, .6); }
 
+  /* 音频模式：大字显示当前这句 + 细长播放条 */
+  .now { display: none; }
+  .is-audio .player { background: radial-gradient(120% 140% at 0% 0%, #2a2f6b 0%, #1a1530 45%, #121216 100%); }
+  .is-audio .now { display: flex; flex-direction: column; justify-content: center; min-height: 190px; padding: 22px 20px 10px; text-align: center; }
+  .is-audio video { height: 54px; background: transparent; }
+  .now p { margin: 0; transition: opacity .3s var(--ease), transform .4s var(--ease); }
+  #nowSrc { font-size: 21px; font-weight: 700; line-height: 1.45; }
+  #nowTr { font-size: 15px; color: #b9b9c6; margin-top: 8px; line-height: 1.5; min-height: 1.5em; }
+  .now.swap p { opacity: 0; transform: translateY(6px); }
+  .eq { display: flex; gap: 3px; justify-content: center; align-items: flex-end; height: 16px; margin-bottom: 14px; opacity: .5; }
+  .eq i { width: 3px; height: 4px; border-radius: 2px; background: #fff; }
+  .playing .eq { opacity: .9; }
+  .playing .eq i { animation: eq 1s ease-in-out infinite; }
+  .playing .eq i:nth-child(2) { animation-delay: -.3s; } .playing .eq i:nth-child(3) { animation-delay: -.6s; } .playing .eq i:nth-child(4) { animation-delay: -.15s; }
+  @keyframes eq { 0%, 100% { height: 4px; } 50% { height: 16px; } }
+
   /* 进入动画：选完视频后控制区依次浮现 */
   .reveal { opacity: 0; transform: translateY(14px); pointer-events: none;
     transition: opacity .45s var(--ease), transform .55s var(--ease); }
@@ -187,13 +203,16 @@
 
 <div class="wrap" id="app">
   <label class="pick press">
-    <span class="ico">🎬</span>
-    <div><b id="pickTitle">选一个本地视频</b><small id="pickSub">MP4 / MOV 最快，几 GB 也能秒开</small></div>
+    <span class="ico" id="pickIco">🎬</span>
+    <div><b id="pickTitle">选一个本地视频或音频</b><small id="pickSub">MP4 / MOV / M4A 最快，几 GB 也能秒开</small></div>
     <span class="chg">换一个</span>
     <input id="file" type="file" accept="video/*,audio/*">
   </label>
 
-  <div class="player"><video id="video" controls playsinline></video></div>
+  <div class="player">
+    <div class="now" id="now"><div class="eq"><i></i><i></i><i></i><i></i></div><p id="nowSrc">♪</p><p id="nowTr"></p></div>
+    <video id="video" controls playsinline></video>
+  </div>
 
   <div class="card reveal d1 lyr-card">
     <div class="prog-top"><b>字幕列表</b><span id="lyrCount">0 句</span></div>
@@ -458,6 +477,7 @@
     } catch (e) {}
   }
   function rebuildCues() {
+    nowKey = '';
     renderList();
     if (!track) return;
     while (track.cues && track.cues.length) track.removeCue(track.cues[0]);
@@ -493,7 +513,25 @@
     lyrEl.scrollTop = keep;
     activeIdx = -1; syncList(false);
   }
+  let isAudio = false, nowKey = '';
+  function setNow(s) {
+    const key = s ? s.start + s.text + mode : '';
+    if (key === nowKey) return;
+    nowKey = key;
+    const box = $('now');
+    box.classList.add('swap');
+    setTimeout(() => {
+      const main = !s ? '♪' : mode === 'tr' ? (s.tr || s.text) : s.text;
+      $('nowSrc').textContent = main;
+      $('nowTr').textContent = s && mode === 'both' && s.tr && s.tr !== s.text ? s.tr : '';
+      box.classList.remove('swap');
+    }, 160);
+  }
   function syncList(smooth) {
+    if (isAudio) {
+      const t = video.currentTime || 0;
+      setNow(lines.find(s => s.start <= t + 0.05 && t < s.end + 0.6) || null);
+    }
     if (!rows.length) return;
     const t = video.currentTime || 0;
     let lo = 0, hi = lines.length - 1, k = -1;
@@ -510,6 +548,8 @@
     }
   }
   video.addEventListener('timeupdate', () => syncList(true));
+  video.addEventListener('play', () => document.body.classList.add('playing'));
+  video.addEventListener('pause', () => document.body.classList.remove('playing'));
   video.addEventListener('seeked', () => { activeIdx = -2; syncList(true); });
   // 手动翻看时暂停跟随，出现「回到当前」
   const stopFollow = () => { follow = false; followBtn.classList.add('show'); };
@@ -587,6 +627,10 @@
     if (regen) ls.del(cacheKey);
     $('pickTitle').textContent = file.name;
     $('pickSub').textContent = (file.size / 1048576 >= 1024 ? (file.size / 1073741824).toFixed(2) + ' GB' : (file.size / 1048576).toFixed(1) + ' MB');
+    isAudio = /^audio\//.test(file.type) || /\.(mp3|m4a|aac|wav|flac|ogg|oga|opus|amr|aiff?)$/i.test(file.name);
+    document.body.classList.toggle('is-audio', isAudio);
+    $('pickIco').textContent = isAudio ? '🎧' : '🎬';
+    setNow(null);
     document.body.classList.add('has-video');
     requestAnimationFrame(() => { moveThumb(); requestAnimationFrame(() => document.body.classList.add('shown')); });
 
@@ -597,7 +641,7 @@
       video.src = URL.createObjectURL(file);
       for (const t of video.textTracks) t.mode = 'disabled';
       track = video.addTextTrack('subtitles', '字幕', 'zh');
-      track.mode = 'showing';
+      track.mode = isAudio ? 'hidden' : 'showing'; // 音频模式字幕显示在上面的大字区
     }
 
     // 重新生成且音轨已经在手：直接开工，不用再抽一遍
