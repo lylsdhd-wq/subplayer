@@ -65,13 +65,18 @@
   .is-audio .now { display: flex; flex-direction: column; position: relative; height: clamp(320px, 56vh, 480px); isolation: isolate;
     user-select: none; -webkit-user-select: none; }
   .art, .shade { position: absolute; inset: 0; z-index: -1; }
-  .art { background: radial-gradient(120% 120% at 0% 0%, #34397a 0%, #1d1838 50%, #121216 100%) center / cover no-repeat;
+  .art { background:
+      radial-gradient(70% 60% at 15% 15%, #ff6a88 0%, transparent 60%),
+      radial-gradient(70% 60% at 90% 30%, #7a5cff 0%, transparent 60%),
+      radial-gradient(80% 70% at 40% 95%, #00b3ff 0%, transparent 60%),
+      linear-gradient(135deg, #5b2bd6, #1e3bd1) center / cover no-repeat;
+    background-size: cover; background-position: center; filter: saturate(1.25) contrast(1.04);
     transition: opacity .6s var(--ease); animation: drift 38s ease-in-out infinite alternate; animation-play-state: paused; }
   .playing .art { animation-play-state: running; }
   .art.fade { opacity: 0; }
   .shade { background:
-    radial-gradient(90% 38% at 50% 48%, rgba(0,0,0,.38), transparent 75%),
-    linear-gradient(to bottom, rgba(0,0,0,.4) 0%, rgba(0,0,0,.18) 22%, rgba(0,0,0,.22) 50%, rgba(0,0,0,.78) 76%, rgba(0,0,0,.9) 100%); }
+    radial-gradient(80% 26% at 50% 48%, rgba(0,0,0,.16), transparent 80%),
+    linear-gradient(to bottom, rgba(0,0,0,.22) 0%, transparent 16%, transparent 56%, rgba(0,0,0,.5) 78%, rgba(0,0,0,.72) 100%); }
   @keyframes drift { from { transform: scale(1.04); } to { transform: scale(1.14) translate(-2%, -1.5%); } }
 
   .now-top { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 12px 0; }
@@ -83,11 +88,11 @@
   .bg-in { display: none; }
 
   .lyric { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 0 22px; text-align: center; min-height: 0; }
-  .lyric p { margin: 0; text-shadow: 0 1px 3px rgba(0,0,0,.65), 0 4px 22px rgba(0,0,0,.6); transition: opacity .3s var(--ease), transform .45s var(--ease), filter .3s; }
+  .lyric p { margin: 0; text-shadow: 0 1px 2px rgba(0,0,0,.7), 0 2px 10px rgba(0,0,0,.55), 0 6px 30px rgba(0,0,0,.45); transition: opacity .3s var(--ease), transform .45s var(--ease), filter .3s; }
   #nowSrc { font-size: 22px; font-weight: 700; line-height: 1.45; }
   #nowTr { font-size: 15px; color: rgba(255,255,255,.78); margin-top: 8px; line-height: 1.5; min-height: 1.5em; }
   .lyric.swap p { opacity: 0; transform: translateY(8px); filter: blur(3px); }
-  .lyric.idle #nowSrc { font-size: 30px; opacity: .55; }
+  .lyric.dim p { opacity: .5; }
 
   .ctrl { padding: 0 18px 16px; }
   .seek { position: relative; height: 28px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
@@ -260,7 +265,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>
           <span>背景</span><input class="bg-in" id="bgIn" type="file" accept="image/*"></label>
       </div>
-      <div class="lyric idle" id="lyric"><p id="nowSrc">♪</p><p id="nowTr"></p></div>
+      <div class="lyric" id="lyric"><p id="nowSrc"></p><p id="nowTr"></p></div>
       <div class="ctrl">
         <div class="seek" id="seek"><div class="rail"><div class="fill" id="fill"></div></div><div class="knob" id="knob"></div></div>
         <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
@@ -588,7 +593,8 @@
     activeIdx = -1; syncList(false);
   }
   let isAudio = false, nowKey = '';
-  function setNow(s) {
+  function setNow(s, dim) {
+    $('lyric').classList.toggle('dim', !!(s && dim)); // 只变淡不换字：直接过渡
     const key = s ? s.start + s.text + mode : '';
     if (key === nowKey) return;
     nowKey = key;
@@ -596,17 +602,21 @@
     box.classList.add('swap');
     clearTimeout(setNow.t);
     setNow.t = setTimeout(() => {
-      const main = !s ? '♪' : mode === 'tr' ? (s.tr || s.text) : s.text;
+      const main = !s ? '' : mode === 'tr' ? (s.tr || s.text) : s.text;
       $('nowSrc').textContent = main;
       $('nowTr').textContent = s && mode === 'both' && s.tr && s.tr !== s.text ? s.tr : '';
-      box.classList.toggle('idle', !s);
       box.classList.remove('swap');
     }, 180);
   }
   function syncList(smooth) {
     if (isAudio) {
       const t = video.currentTime || 0;
-      setNow(lines.find(s => s.start <= t + 0.05 && t < s.end + 0.6) || null);
+      // 最近开始的一句；说完后变淡留着，安静超过 6 秒才清空
+      let k = -1;
+      for (let j = 0; j < lines.length && lines[j].start <= t + 0.05; j++) k = j;
+      const s = lines[k];
+      if (!s || t > s.end + 6) setNow(null);
+      else setNow(s, t > s.end + 0.6);
     }
     if (!rows.length) return;
     const t = video.currentTime || 0;
