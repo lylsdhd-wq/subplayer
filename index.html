@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>边看边出字幕</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "PingFang SC", sans-serif; background: #111; color: #eee; }
+  header { padding: 12px 14px 4px; font-weight: 700; font-size: 17px; }
+  .wrap { padding: 8px 14px 40px; max-width: 900px; margin: 0 auto; }
+  video { width: 100%; background: #000; border-radius: 8px; display: block; }
+  video::cue { font-size: 0.9em; background: rgba(0,0,0,.6); }
+  details { background: #1c1c1e; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+  summary { cursor: pointer; font-weight: 600; }
+  label { display: block; font-size: 13px; color: #aaa; margin: 10px 0 4px; }
+  input[type=text], input[type=password], select {
+    width: 100%; padding: 9px 10px; border-radius: 8px; border: 1px solid #333;
+    background: #2c2c2e; color: #eee; font-size: 15px;
+  }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  button {
+    padding: 9px 12px; border-radius: 8px; border: 0; background: #0a84ff; color: #fff;
+    font-size: 15px; font-weight: 600; flex: 0 0 auto;
+  }
+  button.ghost { background: #2c2c2e; color: #ddd; }
+  .pick { display: block; text-align: center; padding: 14px; border: 1px dashed #555;
+    border-radius: 10px; margin: 10px 0; color: #ccc; }
+  .pick input { display: none; }
+  #status { font-size: 13px; color: #9a9a9a; margin-top: 8px; min-height: 1.4em; white-space: pre-wrap; }
+  #status.err { color: #ff6b6b; }
+  #bar { height: 4px; background: #2c2c2e; border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  #bar div { height: 100%; width: 0; background: #30d158; transition: width .3s; }
+  .modes { display: flex; gap: 6px; margin-top: 10px; }
+  .modes button { flex: 1; background: #2c2c2e; color: #ccc; font-weight: 500; font-size: 14px; }
+  .modes button.on { background: #0a84ff; color: #fff; }
+</style>
+</head>
+<body>
+<header>边看边出字幕</header>
+<div class="wrap">
+
+  <details id="settings">
+    <summary>设置</summary>
+    <label>Gemini API Key</label>
+    <input id="key" type="password" autocomplete="off" placeholder="AIza...">
+    <label>模型</label>
+    <div class="row">
+      <select id="model"></select>
+      <button class="ghost" id="loadModels">刷新列表</button>
+    </div>
+    <label>翻译成</label>
+    <input id="lang" type="text" value="简体中文">
+  </details>
+
+  <label class="pick">📂 选一个本地视频
+    <input id="file" type="file" accept="video/*,audio/*">
+  </label>
+
+  <video id="video" controls playsinline></video>
+
+  <button id="fullBtn" class="ghost" style="width:100%;margin-top:10px">⚡ 先不看，全部生成好</button>
+
+  <div class="modes">
+    <button data-mode="both" class="on">原文 + 翻译</button>
+    <button data-mode="tr">只看翻译</button>
+    <button data-mode="src">只看原文</button>
+  </div>
+
+  <div id="bar"><div></div></div>
+  <div id="status"></div>
+</div>
+
+<script>
+(() => {
+  const CH = 30;          // 每段秒数
+  const AHEAD = 10;       // 最多提前识别几段（10 段 = 5 分钟）
+  const WORKERS = 2;      // 同时请求数
+  const TARGET_SR = 16000;
+
+  const $ = id => document.getElementById(id);
+  const video = $('video'), statusEl = $('status'), barEl = $('bar').firstElementChild;
+  const ls = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+
+  // ---------- 设置 ----------
+  const keyEl = $('key'), modelEl = $('model'), langEl = $('lang');
+  keyEl.value = ls.get('sub_key') || '';
+  langEl.value = ls.get('sub_lang') || '简体中文';
+  keyEl.onchange = () => ls.set('sub_key', keyEl.value.trim());
+  langEl.onchange = () => ls.set('sub_lang', langEl.value.trim());
+  if (!keyEl.value) $('settings').open = true;
+
+  function setModels(list, preferred) {
+    modelEl.innerHTML = '';
+    list.forEach(m => {
+      const o = document.createElement('option');
+      o.value = o.textContent = m;
+      modelEl.appendChild(o);
+    });
+    if (preferred && list.includes(preferred)) modelEl.value = preferred;
+  }
+  const savedModel = ls.get('sub_model');
+  setModels(savedModel ? [savedModel] : ['gemini-3.6-flash'], savedModel);
+  modelEl.onchange = () => ls.set('sub_model', modelEl.value);
+
+  $('loadModels').onclick = async () => {
+    const key = keyEl.value.trim();
+    if (!key) return setStatus('先填 API Key', true);
+    setStatus('获取模型列表…');
+    try {
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=' + encodeURIComponent(key));
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error?.message || r.status);
+      const names = (j.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map(m => m.name.replace(/^models\//, ''))
+        .filter(n => /gemini/.test(n) && !/(tts|image|embed|live|audio)/.test(n))
+        .sort().reverse();
+      const flash = names.find(n => /flash$/.test(n)) || names[0];
+      setModels(names, ls.get('sub_model') || flash);
+      ls.set('sub_model', modelEl.value);
+      setStatus('模型列表已更新');
+    } catch (e) { setStatus('获取失败：' + e.message, true); }
+  };
+
+  // ---------- 显示模式 ----------
+  let mode = ls.get('sub_mode') || 'both';
+  document.querySelectorAll('.modes button').forEach(b => {
+    b.classList.toggle('on', b.dataset.mode === mode);
+    b.onclick = () => {
+      mode = b.dataset.mode; ls.set('sub_mode', mode);
+      document.querySelectorAll('.modes button').forEach(x => x.classList.toggle('on', x === b));
+      rebuildCues();
+    };
+  });
+
+  function setStatus(msg, err) {
+    statusEl.textContent = msg;
+    statusEl.classList.toggle('err', !!err);
+  }
+
+  // ---------- 状态 ----------
+  let session = 0;        // 换视频时作废旧任务
+  let pcm = null, sr = TARGET_SR, nChunks = 0;
+  let state = [], tries = [], segs = [];   // state: 0 未做 1 进行中 2 完成 3 放弃
+  let track = null;
+
+  function cueText(s) {
+    if (mode === 'src') return s.text;
+    if (mode === 'tr') return s.tr || s.text;
+    return (s.tr && s.tr !== s.text) ? s.text + '\n' + s.tr : s.text;
+  }
+  function addCue(s) {
+    try {
+      const c = new VTTCue(s.start, s.end, cueText(s));
+      c.line = -2; // 靠下
+      track.addCue(c);
+    } catch (e) {}
+  }
+  function rebuildCues() {
+    if (!track) return;
+    while (track.cues && track.cues.length) track.removeCue(track.cues[0]);
+    segs.flat().forEach(addCue);
+  }
+
+  // ---------- 全部预生成 ----------
+  let fullMode = false;
+  const fullBtn = $('fullBtn');
+  fullBtn.onclick = () => {
+    fullMode = !fullMode;
+    fullBtn.textContent = fullMode ? '⏸ 停止全部生成（只跟着播放进度做）' : '⚡ 先不看，全部生成好';
+    fullBtn.className = fullMode ? '' : 'ghost';
+    if (nChunks) updateProgress();
+  };
+
+  // ---------- 字幕缓存（同一个视频下次直接挂上） ----------
+  let cacheKey = '';
+  function saveCache() {
+    if (!cacheKey) return;
+    const done = [];
+    state.forEach((s, i) => { if (s === 2) done.push(i); });
+    ls.set(cacheKey, JSON.stringify({ n: nChunks, done, segs }));
+  }
+  function loadCache() {
+    try { return JSON.parse(ls.get(cacheKey) || 'null'); } catch (e) { return null; }
+  }
+
+  // ---------- 读取视频 ----------
+  $('file').onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const my = ++session;
+    pcm = null; state = []; tries = []; segs = []; nChunks = 0; barEl.style.width = '0';
+    cacheKey = 'sub_cache:' + file.name + '|' + file.size;
+
+    if (video.src) URL.revokeObjectURL(video.src);
+    video.src = URL.createObjectURL(file);
+    for (const t of video.textTracks) t.mode = 'disabled';
+    track = video.addTextTrack('subtitles', '字幕', 'zh');
+    track.mode = 'showing';
+
+    // 有缓存先挂上
+    const cache = loadCache();
+    if (cache && cache.n) {
+      nChunks = cache.n;
+      state = new Array(nChunks).fill(0);
+      tries = new Array(nChunks).fill(0);
+      segs = Array.from({ length: nChunks }, (_, i) => cache.segs[i] || []);
+      cache.done.forEach(i => { state[i] = 2; });
+      rebuildCues();
+      if (state.every(s => s === 2)) {
+        barEl.style.width = '100%';
+        setStatus('✅ 字幕之前已经全部生成好，直接看吧');
+        return; // 不用再抽音轨
+      }
+    }
+
+    setStatus((cache ? '已挂上之前生成的部分，' : '') + '正在提取音轨…（视频越大越慢，可以先开始播放）');
+    try {
+      const buf = await file.arrayBuffer();
+      const audio = await decode(buf);
+      if (my !== session) return;
+      sr = audio.sampleRate;
+      pcm = toMonoInt16(audio);
+      if (!nChunks) {
+        nChunks = Math.ceil(audio.duration / CH);
+        state = new Array(nChunks).fill(0);
+        tries = new Array(nChunks).fill(0);
+        segs = Array.from({ length: nChunks }, () => []);
+      }
+      setStatus('音轨就绪，开始识别');
+      for (let i = 0; i < WORKERS; i++) worker(my);
+    } catch (err) {
+      setStatus('音轨提取失败：' + (err.message || err) + '\n（文件太大或格式不支持时会这样）', true);
+    }
+  };
+
+  async function decode(buf) {
+    let ctx;
+    try { ctx = new AudioContext({ sampleRate: TARGET_SR }); }
+    catch (e) { ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+    try {
+      return await new Promise((res, rej) => {
+        const p = ctx.decodeAudioData(buf, res, rej);
+        if (p && p.then) p.then(res, rej);
+      });
+    } finally { try { ctx.close(); } catch (e) {} }
+  }
+
+  function toMonoInt16(ab) {
+    const n = ab.length, chs = ab.numberOfChannels;
+    const out = new Int16Array(n);
+    const data = [];
+    for (let c = 0; c < chs; c++) data.push(ab.getChannelData(c));
+    for (let i = 0; i < n; i++) {
+      let v = 0;
+      for (let c = 0; c < chs; c++) v += data[c][i];
+      v /= chs;
+      out[i] = v > 1 ? 32767 : v < -1 ? -32768 : v * 32767;
+    }
+    return out;
+  }
+
+  // 取第 i 段，降到 16k，打包成 wav
+  function chunkWav(i) {
+    const s0 = Math.floor(i * CH * sr), s1 = Math.min(pcm.length, Math.floor((i + 1) * CH * sr));
+    const ratio = sr / TARGET_SR;
+    const len = Math.floor((s1 - s0) / ratio);
+    const view = new DataView(new ArrayBuffer(44 + len * 2));
+    const w = (o, s) => { for (let k = 0; k < s.length; k++) view.setUint8(o + k, s.charCodeAt(k)); };
+    w(0, 'RIFF'); view.setUint32(4, 36 + len * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, TARGET_SR, true); view.setUint32(28, TARGET_SR * 2, true);
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true); w(36, 'data'); view.setUint32(40, len * 2, true);
+    for (let k = 0; k < len; k++) view.setInt16(44 + k * 2, pcm[s0 + Math.floor(k * ratio)], true);
+    return { blob: new Blob([view.buffer], { type: 'audio/wav' }), dur: (s1 - s0) / sr };
+  }
+
+  function blobToB64(blob) {
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(',')[1]);
+      r.onerror = rej;
+      r.readAsDataURL(blob);
+    });
+  }
+
+  // ---------- 调度：优先当前播放位置 ----------
+  function pickNext() {
+    const cur = Math.floor((video.currentTime || 0) / CH);
+    for (let i = cur; i < Math.min(nChunks, cur + AHEAD); i++) if (state[i] === 0) return i;
+    if (fullMode) {
+      for (let i = cur; i < nChunks; i++) if (state[i] === 0) return i;
+      for (let i = 0; i < cur; i++) if (state[i] === 0) return i;
+    }
+    return -1;
+  }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  async function worker(my) {
+    while (my === session) {
+      const i = pickNext();
+      if (i < 0) { await sleep(600); continue; }
+      state[i] = 1;
+      try {
+        const list = await recognize(i);
+        if (my !== session) return;
+        segs[i] = list;
+        list.forEach(addCue);
+        state[i] = 2;
+        saveCache();
+        updateProgress();
+      } catch (err) {
+        if (my !== session) return;
+        tries[i]++;
+        state[i] = tries[i] >= 3 ? 3 : 0;
+        setStatus(`第 ${i + 1} 段出错：${err.message}` + (state[i] === 3 ? '（已跳过）' : '（稍后重试）'), true);
+        await sleep(err.retryAfter || 3000);
+      }
+    }
+  }
+
+  function updateProgress() {
+    const done = state.filter(s => s >= 2).length;
+    barEl.style.width = (done / nChunks * 100).toFixed(1) + '%';
+    if (done === nChunks) {
+      const skipped = state.filter(s => s === 3).length;
+      return setStatus(skipped ? `生成完毕，有 ${skipped} 段出错跳过了` : '✅ 全部字幕生成好了，下次选同一个视频会直接挂上');
+    }
+    let k = Math.floor((video.currentTime || 0) / CH);
+    while (k < nChunks && state[k] >= 2) k++;
+    const t = Math.min(k * CH, video.duration || k * CH);
+    setStatus(`已识别 ${done}/${nChunks} 段 · 字幕已覆盖到 ${fmt(t)}`);
+  }
+  const fmt = s => { s = Math.floor(s); const m = Math.floor(s / 60); return `${m}:${String(s % 60).padStart(2, '0')}`; };
+
+  // ---------- 调 Gemini ----------
+  async function recognize(i) {
+    const key = keyEl.value.trim();
+    if (!key) { const e = new Error('还没填 API Key'); e.retryAfter = 5000; throw e; }
+    const model = modelEl.value;
+    const lang = langEl.value.trim() || '简体中文';
+    const { blob, dur } = chunkWav(i);
+    const b64 = await blobToB64(blob);
+
+    const prev = (segs[i - 1] || []).slice(-3).map(s => s.text).join(' / ');
+    const prompt =
+`这是视频里的一段音频，长约 ${dur.toFixed(1)} 秒。
+请把里面所有人声对白逐句转写成原语言文字（text），并给每句附上${lang}翻译（tr）；如果原文已经是${lang}，tr 和 text 相同。
+start / end 是这句话在这段音频里的开始和结束秒数（相对本段，0 到 ${dur.toFixed(1)} 之间，保留一位小数）。
+每句控制在一行字幕的长度，长句拆开。
+没有人声（纯音乐、静音、环境声）就返回空数组。听不清的地方不要编造。` +
+      (prev ? `\n上一段结尾的台词（仅供理解语境，不要重复输出）：${prev}` : '');
+
+    const body = {
+      contents: [{ parts: [
+        { inline_data: { mime_type: 'audio/wav', data: b64 } },
+        { text: prompt }
+      ] }],
+      generationConfig: {
+        temperature: 0.2,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              start: { type: 'NUMBER' }, end: { type: 'NUMBER' },
+              text: { type: 'STRING' }, tr: { type: 'STRING' }
+            },
+            required: ['start', 'end', 'text', 'tr']
+          }
+        }
+      }
+    };
+
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const e = new Error(j.error?.message || ('HTTP ' + r.status));
+      if (r.status === 429) e.retryAfter = 15000;
+      throw e;
+    }
+    const txt = (j.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+    let arr;
+    try { arr = JSON.parse(txt); } catch (e) { throw new Error('返回内容解析失败'); }
+    if (!Array.isArray(arr)) arr = [];
+
+    const base = i * CH;
+    return arr
+      .filter(s => s && s.text)
+      .map(s => {
+        let a = Math.max(0, Math.min(dur, +s.start || 0));
+        let b = Math.max(0, Math.min(dur, +s.end || 0));
+        if (b <= a) b = Math.min(dur, a + 2);
+        return { start: base + a, end: base + b, text: String(s.text).trim(), tr: String(s.tr || '').trim() };
+      });
+  }
+
+  video.addEventListener('seeked', () => { if (nChunks) updateProgress(); });
+})();
+</script>
+</body>
+</html>
