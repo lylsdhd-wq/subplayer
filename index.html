@@ -441,11 +441,20 @@
     headEl.style.left = d ? Math.min(100, (video.currentTime || 0) / d * 100) + '%' : '0';
   }
   video.addEventListener('timeupdate', moveHead);
+  let pendingSeek = null;
+  function seekTo(t) {
+    if (video.readyState >= 1) { video.currentTime = t; return; }
+    pendingSeek = t;           // 还没加载好：记下来，加载完再跳
+    try { video.load(); } catch (e) {}
+  }
+  video.addEventListener('loadedmetadata', () => {
+    if (pendingSeek != null) { video.currentTime = pendingSeek; pendingSeek = null; }
+  });
   mapEl.addEventListener('click', e => {
-    if (!video.duration) return;
+    if (!video.duration && !nChunks) return;
     const r = mapEl.getBoundingClientRect();
     const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-    video.currentTime = f * video.duration;
+    seekTo(f * (video.duration || nChunks * CH));
     moveHead();
     // 点到红格附近（手指宽度 ±14px 内）就把那些失败段重新排队
     const x = e.clientX - r.left, tol = 14;
@@ -504,7 +513,7 @@
       const main = mode === 'tr' ? (s.tr || s.text) : s.text;
       const sub = mode === 'both' && s.tr && s.tr !== s.text ? `<p>${esc(s.tr)}</p>` : '';
       el.innerHTML = `<time>${fmt(s.start)}</time><div><p>${esc(main)}</p>${sub}</div>`;
-      el.onclick = () => { video.currentTime = s.start + 0.01; follow = true; followBtn.classList.remove('show'); syncList(true); };
+      el.onclick = () => { seekTo(s.start + 0.01); follow = true; followBtn.classList.remove('show'); syncList(true); };
       frag.appendChild(el);
       return el;
     });
@@ -647,6 +656,7 @@
     } else {
       if (video.src) URL.revokeObjectURL(video.src);
       video.src = URL.createObjectURL(file);
+      if (isAudio && (/\.mp3$/i.test(file.name) || /audio\/(mpeg|mp3)/.test(file.type))) mp3ToM4a(file, session);
       for (const t of video.textTracks) t.mode = 'disabled';
       track = video.addTextTrack('subtitles', '字幕', 'zh');
       track.mode = isAudio ? 'hidden' : 'showing'; // 音频模式字幕显示在上面的大字区
@@ -729,6 +739,133 @@
     } catch (err) {
       setStatus('音轨提取失败：' + (err.message || err) + '\n（文件太大或格式不支持时会这样）', true);
     }
+  }
+
+  // ---------- MP3 重新封装成 M4A（不重新编码） ----------
+  // 浏览器拖动 VBR 的 MP3 只能估算位置，可能差几十秒；M4A 里每帧时间都写明了，跳转精确到帧
+  async function mp3ToM4a(file, my) {
+    try {
+      const BR1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+      const BR2 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+      const SR = [44100, 48000, 32000];
+      let off = 0, buf = null, bufAt = 0;
+      const STEP = 4 << 20;
+      const need = async (o, n) => {
+        if (!buf || o < bufAt || o + n > bufAt + buf.byteLength) {
+          bufAt = o; buf = new DataView(await file.slice(o, Math.min(file.size, o + STEP)).arrayBuffer());
+        }
+        return o + n <= bufAt + buf.byteLength;
+      };
+      const head = o => {
+        if (buf.getUint8(o - bufAt) !== 0xFF) return null;
+        const h = buf.getUint32(o - bufAt);
+        if ((h & 0xFFE00000) >>> 0 !== 0xFFE00000) return null;
+        const ver = (h >> 19) & 3, layer = (h >> 17) & 3, bi = (h >> 12) & 15, si = (h >> 10) & 3, pad = (h >> 9) & 1, chm = (h >> 6) & 3;
+        if (ver === 1 || layer !== 1 || bi === 0 || bi === 15 || si === 3) return null;
+        const v1 = ver === 3, sr = SR[si] / (v1 ? 1 : ver === 2 ? 2 : 4), br = (v1 ? BR1 : BR2)[bi];
+        return { len: Math.floor((v1 ? 144 : 72) * br * 1000 / sr) + pad, sr, spf: v1 ? 1152 : 576, ch: chm === 3 ? 1 : 2, v1, br };
+      };
+      // 跳过开头 ID3v2
+      await need(0, 10);
+      if (buf.byteLength >= 10 && buf.getUint8(0) === 0x49 && buf.getUint8(1) === 0x44 && buf.getUint8(2) === 0x33) {
+        const sz = ((buf.getUint8(6) & 127) << 21) | ((buf.getUint8(7) & 127) << 14) | ((buf.getUint8(8) & 127) << 7) | (buf.getUint8(9) & 127);
+        off = 10 + sz + (buf.getUint8(5) & 0x10 ? 10 : 0);
+      }
+      // 找第一帧（连续两帧都合法才算）
+      let first = null;
+      for (let tries = 0; off + 4 < file.size && tries < 1 << 20; off++, tries++) {
+        if (!(await need(off, 4))) break;
+        const h = head(off);
+        if (!h) continue;
+        if (!(await need(off + h.len, 4))) break;
+        const h2 = head(off + h.len);
+        if (h2 && h2.sr === h.sr) { first = h; break; }
+        await need(off, 4);
+      }
+      if (!first) return;
+      // 第一帧如果是 Xing/Info/VBRI 信息帧（不含声音），跳过
+      await need(off, 64);
+      const side = first.v1 ? (first.ch === 1 ? 17 : 32) : (first.ch === 1 ? 9 : 17);
+      const tag = (o) => String.fromCharCode(...[0, 1, 2, 3].map(k => buf.getUint8(o - bufAt + k)));
+      if (['Xing', 'Info'].includes(tag(off + 4 + side)) || tag(off + 36) === 'VBRI') off += first.len;
+
+      const start = off, sizes = [];
+      while (off + 4 <= file.size) {
+        if (!(await need(off, 4))) break;
+        const h = head(off);
+        if (!h || h.sr !== first.sr) break;
+        if (off + h.len > file.size) break;
+        sizes.push(h.len); off += h.len;
+        if (my !== session) return;
+      }
+      if (sizes.length < 10) return;
+      const end = off, n = sizes.length, sr = first.sr, spf = first.spf;
+
+      // 拼 MP4 盒子
+      const box = (type, ...parts) => {
+        const len = 8 + parts.reduce((a, p) => a + p.length, 0);
+        const out = new Uint8Array(len), dv = new DataView(out.buffer);
+        dv.setUint32(0, len); for (let k = 0; k < 4; k++) out[4 + k] = type.charCodeAt(k);
+        let o = 8; parts.forEach(p => { out.set(p, o); o += p.length; });
+        return out;
+      };
+      const u = (bytes, ...vals) => { // bytes: 每个值的字节数
+        const out = new Uint8Array(bytes.reduce((a, b) => a + b, 0)), dv = new DataView(out.buffer);
+        let o = 0; vals.forEach((v, k) => { const b = bytes[k];
+          if (b === 1) dv.setUint8(o, v); else if (b === 2) dv.setUint16(o, v); else dv.setUint32(o, v); o += b; });
+        return out;
+      };
+      const str = t => Uint8Array.from(t, c => c.charCodeAt(0));
+      const zeros = k => new Uint8Array(k);
+      const matrix = u([4, 4, 4, 4, 4, 4, 4, 4, 4], 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000);
+      const dur = n * spf;
+      const durMs = Math.round(dur / sr * 1000);
+      const avgBr = Math.round((end - start) * 8 / (dur / sr));
+
+      const esDesc = [3, 21, 0, 1, 0, 4, 13, 0x6B, 0x15, 0, 0, 0, ...[24, 16, 8, 0].map(k => (avgBr * 2 >>> k) & 255), ...[24, 16, 8, 0].map(k => (avgBr >>> k) & 255), 6, 1, 2];
+      const esds = box('esds', zeros(4), Uint8Array.from(esDesc));
+      const mp4a = box('mp4a', zeros(6), u([2], 1), zeros(8), u([2, 2, 2, 2, 4], first.ch, 16, 0, 0, sr * 65536 >>> 0), esds);
+      const stszSizes = new Uint8Array(n * 4), sdv = new DataView(stszSizes.buffer);
+      sizes.forEach((v, k) => sdv.setUint32(k * 4, v));
+
+      const build = mdatAt => box('moov',
+        box('mvhd', zeros(4), u([4, 4, 4, 4, 4, 2], 0, 0, 1000, durMs, 0x10000, 0x100), zeros(10), matrix, zeros(24), u([4], 2)),
+        box('trak',
+          box('tkhd', u([4], 3), u([4, 4, 4, 4, 4], 0, 0, 1, 0, durMs), zeros(8), u([2, 2, 2, 2], 0, 0, 0x100, 0), matrix, u([4, 4], 0, 0)),
+          box('mdia',
+            box('mdhd', zeros(4), u([4, 4, 4, 4, 2, 2], 0, 0, sr, dur, 0x55C4, 0)),
+            box('hdlr', zeros(8), str('soun'), zeros(12), str('SoundHandler\0')),
+            box('minf',
+              box('smhd', zeros(8)),
+              box('dinf', box('dref', zeros(4), u([4], 1), box('url ', u([4], 1)))),
+              box('stbl',
+                box('stsd', zeros(4), u([4], 1), mp4a),
+                box('stts', zeros(4), u([4, 4, 4], 1, n, spf)),
+                box('stsc', zeros(4), u([4, 4, 4, 4], 1, 1, n, 1)),
+                box('stsz', zeros(4), u([4, 4], 0, n), stszSizes),
+                box('stco', zeros(4), u([4, 4], 1, mdatAt)))))));
+      const ftyp = box('ftyp', str('M4A '), u([4], 0), str('M4A mp42isom'));
+      const moovLen = build(0).length;
+      const moov = build(ftyp.length + moovLen + 8);
+      const mdatHdr = u([4], 8 + end - start); const mdatType = str('mdat');
+      const blob = new Blob([ftyp, moov, mdatHdr, mdatType, file.slice(start, end)], { type: 'audio/mp4' });
+      if (my !== session) return;
+
+      // 换成精确版本，保持播放位置；播不了就换回原文件
+      const orig = video.src, t = video.currentTime, playing = !video.paused;
+      const url = URL.createObjectURL(blob);
+      const revert = () => {
+        if (video.src !== url) return;
+        video.src = orig; URL.revokeObjectURL(url);
+        video.addEventListener('loadedmetadata', () => { video.currentTime = t; }, { once: true });
+      };
+      video.addEventListener('error', revert, { once: true });
+      video.src = url;
+      if (t > 0) pendingSeek = t;
+      if (playing) video.play().catch(() => {});
+      video.addEventListener('loadedmetadata', () => video.removeEventListener('error', revert), { once: true });
+      URL.revokeObjectURL(orig);
+    } catch (e) { /* 失败就继续用原文件 */ }
   }
 
   // ---------- MP4/MOV 音轨直读 ----------
