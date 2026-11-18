@@ -87,6 +87,29 @@
   .calm .ctrl { opacity: 0; transform: translateY(12px); pointer-events: none; }
   .calm .shade { opacity: .35; }
   .calm .lyric { transform: translateY(24px); }
+  /* 长按三倍速提示 */
+  .player { position: relative; }
+  .ffpill { position: absolute; top: 14px; left: 50%; z-index: 46; display: flex; align-items: center; gap: 6px; padding: 7px 14px;
+    border-radius: 99px; font-size: 13px; font-weight: 700; color: #fff; background: rgba(0,0,0,.55);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); pointer-events: none;
+    opacity: 0; transform: translate(-50%, -8px) scale(.9); transition: opacity .25s, transform .35s var(--ease); }
+  .ffpill svg { width: 16px; height: 16px; animation: ffnudge .7s ease-in-out infinite; }
+  .ff .ffpill { opacity: 1; transform: translate(-50%, 0); }
+  @keyframes ffnudge { 50% { transform: translateX(3px); } }
+  .now, video { -webkit-touch-callout: none; }
+
+  /* 页面级全屏（iPhone 不允许网页元素真全屏，用铺满屏幕代替） */
+  .i-unfs { display: none; }
+  .fs .i-fs { display: none; } .fs .i-unfs { display: block; }
+  #fsBtn { width: 34px; padding: 0; }
+  body.fs { overflow: hidden; }
+  .fs .now { position: fixed; inset: 0; z-index: 40; height: 100vh; height: 100dvh; border-radius: 0; animation: fsIn .45s var(--ease); }
+  .fs .now-top { padding-top: calc(12px + env(safe-area-inset-top)); padding-left: calc(12px + env(safe-area-inset-left)); padding-right: calc(12px + env(safe-area-inset-right)); }
+  .fs .ctrl { padding-bottom: calc(22px + env(safe-area-inset-bottom)); max-width: 640px; width: 100%; margin: 0 auto; }
+  .fs #nowSrc { font-size: 28px; } .fs #nowTr { font-size: 18px; }
+  .fs .ffpill { position: fixed; top: calc(16px + env(safe-area-inset-top)); }
+  @keyframes fsIn { from { opacity: .4; transform: scale(.96); } }
+
   .now-top { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 12px 0; }
   .glass { white-space: nowrap; height: 34px; min-width: 34px; padding: 0 10px; border-radius: 99px; display: inline-flex; align-items: center; justify-content: center; gap: 4px;
     font-size: 13px; font-weight: 600; color: #fff; background: rgba(255,255,255,.14);
@@ -285,6 +308,11 @@
     <div class="now" id="now">
       <div class="art" id="art"></div><div class="shade"></div>
       <div class="now-top">
+        <button class="glass press" id="fsBtn" aria-label="全屏">
+          <svg class="i-fs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          <svg class="i-unfs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
+        </button>
+        <span style="flex:1"></span>
         <button class="glass press" id="bgDel" hidden aria-label="去掉背景图">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
         <label class="glass press" aria-label="换背景图">
@@ -308,6 +336,7 @@
       </div>
     </div>
     <video id="video" controls playsinline></video>
+    <div class="ffpill" id="ffPill"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 6.5v11a1 1 0 0 0 1.5.86L12 13.8v3.7a1 1 0 0 0 1.5.86l8.5-5.5a1 1 0 0 0 0-1.72l-8.5-5.5A1 1 0 0 0 12 6.5v3.7L4.5 5.64A1 1 0 0 0 3 6.5z"/></svg>3× 快进中</div>
   </div>
 
   <div class="card reveal d1 lyr-card">
@@ -699,7 +728,59 @@
     if (!video.paused && isAudio) calmT = setTimeout(() => { if (!dragging && !video.paused) nowEl.classList.add('calm'); }, 3000);
   }
   // 隐藏时控件 pointer-events: none，所以这一下只会唤出，不会误触按钮
-  nowEl.addEventListener('pointerdown', wake, true);
+  const isCtl = t => !!t.closest('button, label, input, .seek');
+  nowEl.addEventListener('pointerdown', e => { if (isCtl(e.target)) wake(); }, true);
+  // 点空白处：显示 ↔ 隐藏 控件
+  nowEl.addEventListener('click', e => {
+    if (isCtl(e.target)) return;
+    if (lpFired) { lpFired = false; return; } // 刚长按完，不算点击
+    if (nowEl.classList.contains('calm')) wake();
+    else { clearTimeout(calmT); nowEl.classList.add('calm'); }
+  });
+
+  // 长按画面 = 三倍速，松手恢复
+  let lpT = 0, lpFired = false, lpX = 0, lpY = 0, baseRate = 1;
+  function bindLongPress(el) {
+    el.addEventListener('pointerdown', e => {
+      if (isCtl(e.target) || video.paused) return;
+      lpX = e.clientX; lpY = e.clientY; lpFired = false;
+      clearTimeout(lpT);
+      lpT = setTimeout(() => {
+        lpFired = true;
+        baseRate = video.playbackRate;
+        video.playbackRate = 3;
+        document.body.classList.add('ff');
+        clearTimeout(calmT);
+        if (navigator.vibrate) navigator.vibrate(12);
+      }, 450);
+    });
+    el.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - lpX, e.clientY - lpY) > 12) clearTimeout(lpT); });
+    const up = () => {
+      clearTimeout(lpT);
+      if (!document.body.classList.contains('ff')) return;
+      video.playbackRate = baseRate;
+      document.body.classList.remove('ff');
+      if (!nowEl.classList.contains('calm')) wake();
+    };
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => el.addEventListener(ev, up));
+    el.addEventListener('contextmenu', e => e.preventDefault());
+  }
+  bindLongPress(nowEl);
+  bindLongPress(video);
+  video.addEventListener('click', e => { if (lpFired) { e.preventDefault(); lpFired = false; } }, true);
+
+  // 全屏
+  function setFs(on) {
+    document.body.classList.toggle('fs', on);
+    const de = document.documentElement;
+    try {
+      if (on && !document.fullscreenElement && de.requestFullscreen) de.requestFullscreen().catch(() => {});
+      if (!on && document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    } catch (e) {}
+    wake();
+  }
+  $('fsBtn').onclick = () => setFs(!document.body.classList.contains('fs'));
+  document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && document.body.classList.contains('fs')) setFs(false); });
   video.addEventListener('seeked', () => { if (!nowEl.classList.contains('calm')) wake(); });
   video.addEventListener('ended', () => document.body.classList.remove('playing'));
 
@@ -753,7 +834,10 @@
     $('speedBtn').textContent = SPEEDS[speedIdx] + '×';
   };
   video.addEventListener('loadedmetadata', () => { video.playbackRate = SPEEDS[speedIdx]; });
-  $('listBtn').onclick = () => document.querySelector('.lyr-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $('listBtn').onclick = () => {
+    const go = () => document.querySelector('.lyr-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (document.body.classList.contains('fs')) { setFs(false); setTimeout(go, 350); } else go();
+  };
 
   // ---------- 背景图（存在本机 IndexedDB，下次自动用） ----------
   const idb = (() => {
@@ -898,6 +982,7 @@
     $('pickIco').textContent = isAudio ? '🎧' : '🎬';
     setNow(null);
     drawBar(0);
+    if (document.body.classList.contains('fs') && !isAudio) setFs(false);
     document.body.classList.add('has-video');
     requestAnimationFrame(() => { moveThumb(); requestAnimationFrame(() => document.body.classList.add('shown')); });
 
