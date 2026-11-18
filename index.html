@@ -243,7 +243,26 @@
       }
     }
 
-    setStatus((cache ? '已挂上之前生成的部分，' : '') + '正在提取音轨…（视频越大越慢，可以先开始播放）');
+    // 优先：MP4/MOV 直接从文件里按段切出 AAC/MP3 音频帧，不整体解码，几 GB 的视频也秒开
+    mp4 = null;
+    try { mp4 = await openMp4Audio(file); } catch (err) { mp4 = null; }
+    if (my !== session) return;
+    if (mp4) {
+      if (!nChunks) {
+        nChunks = Math.ceil(mp4.duration / CH);
+        state = new Array(nChunks).fill(0);
+        tries = new Array(nChunks).fill(0);
+        segs = Array.from({ length: nChunks }, () => []);
+      }
+      setStatus((cache ? '已挂上之前生成的部分，' : '') + '音轨就绪，开始识别');
+      for (let i = 0; i < WORKERS; i++) worker(my);
+      return;
+    }
+
+    // 兜底：其它格式整个解码（大文件会很慢、占内存）
+    const big = file.size > 800 * 1024 * 1024;
+    setStatus((cache ? '已挂上之前生成的部分，' : '') + '正在提取音轨…（这个格式只能整体解码，视频越大越慢，可以先开始播放）' +
+      (big ? '\n⚠️ 文件很大，手机上可能会卡住或失败，建议转成 MP4 再选' : ''));
     try {
       const buf = await file.arrayBuffer();
       const audio = await decode(buf);
@@ -262,6 +281,194 @@
       setStatus('音轨提取失败：' + (err.message || err) + '\n（文件太大或格式不支持时会这样）', true);
     }
   };
+
+  // ---------- MP4/MOV 音轨直读 ----------
+  let mp4 = null;
+  const fourcc = (dv, o) => String.fromCharCode(dv.getUint8(o), dv.getUint8(o + 1), dv.getUint8(o + 2), dv.getUint8(o + 3));
+  const readDV = async (file, a, b) => new DataView(await file.slice(a, b).arrayBuffer());
+
+  // 只读顶层 box 头，找到 moov 后只把 moov 读进来（通常几 MB）
+  async function openMp4Audio(file) {
+    let off = 0, moov = null, first = true;
+    while (off + 8 <= file.size) {
+      const h = await readDV(file, off, Math.min(file.size, off + 16));
+      let size = h.getUint32(0);
+      const type = fourcc(h, 4);
+      if (first && !['ftyp', 'moov', 'mdat', 'free', 'wide', 'skip', 'pnot', 'uuid'].includes(type)) return null;
+      first = false;
+      let hdr = 8;
+      if (size === 1) { size = h.getUint32(8) * 4294967296 + h.getUint32(12); hdr = 16; }
+      else if (size === 0) size = file.size - off;
+      if (size < hdr) return null;
+      if (type === 'moov') { moov = await readDV(file, off + hdr, off + size); break; }
+      off += size;
+    }
+    if (!moov) return null;
+
+    const kids = (dv, s, e) => {
+      const out = [];
+      while (s + 8 <= e) {
+        let size = dv.getUint32(s), hdr = 8;
+        const type = fourcc(dv, s + 4);
+        if (size === 1) { size = dv.getUint32(s + 8) * 4294967296 + dv.getUint32(s + 12); hdr = 16; }
+        else if (size === 0) size = e - s;
+        if (size < hdr || s + size > e) break;
+        out.push({ type, s: s + hdr, e: s + size });
+        s += size;
+      }
+      return out;
+    };
+    const find = (dv, box, path) => {
+      let cur = box;
+      for (const t of path) { cur = kids(dv, cur.s, cur.e).find(b => b.type === t); if (!cur) return null; }
+      return cur;
+    };
+
+    const root = { s: 0, e: moov.byteLength };
+    const mvhd = find(moov, root, ['mvhd']);
+    const movieTs = mvhd ? moov.getUint32(mvhd.s + (moov.getUint8(mvhd.s) === 1 ? 20 : 12)) : 1000;
+
+    for (const trak of kids(moov, 0, moov.byteLength).filter(b => b.type === 'trak')) {
+      const hdlr = find(moov, trak, ['mdia', 'hdlr']);
+      if (!hdlr || fourcc(moov, hdlr.s + 8) !== 'soun') continue;
+      const mdhd = find(moov, trak, ['mdia', 'mdhd']);
+      const stbl = find(moov, trak, ['mdia', 'minf', 'stbl']);
+      if (!mdhd || !stbl) continue;
+      const ts = moov.getUint32(mdhd.s + (moov.getUint8(mdhd.s) === 1 ? 20 : 12));
+      const t = {};
+      kids(moov, stbl.s, stbl.e).forEach(b => { t[b.type] = b; });
+      if (!t.stsd || !t.stts || !t.stsc || !t.stsz || !(t.stco || t.co64)) continue;
+
+      // 编码格式
+      const entry = kids(moov, t.stsd.s + 8, t.stsd.e)[0];
+      if (!entry) continue;
+      let codec = null, asc = null;
+      if (entry.type === '.mp3' || entry.type === 'ms\0U') codec = 'mp3';
+      else if (entry.type === 'mp4a') {
+        // 在 sample entry 里找 esds（QuickTime 可能套在 wave 里）
+        let p = -1;
+        for (let k = entry.s; k + 4 <= entry.e; k++) if (fourcc(moov, k) === 'esds') { p = k + 4; break; }
+        if (p < 0) continue;
+        const end = moov.getUint32(p - 8) + p - 8;
+        p += 4; // version/flags
+        const desc = () => {
+          const tag = moov.getUint8(p++); let len = 0, b;
+          do { b = moov.getUint8(p++); len = (len << 7) | (b & 0x7f); } while (b & 0x80);
+          return { tag, len };
+        };
+        let d = desc();
+        if (d.tag !== 3) continue;
+        p += 2; const fl = moov.getUint8(p++);
+        if (fl & 0x80) p += 2;
+        if (fl & 0x40) p += moov.getUint8(p) + 1;
+        if (fl & 0x20) p += 2;
+        d = desc();
+        if (d.tag !== 4) continue;
+        const oti = moov.getUint8(p);
+        p += 13;
+        if (oti === 0x6B || oti === 0x69) codec = 'mp3';
+        else if (oti === 0x40 || oti === 0x66 || oti === 0x67 || oti === 0x68) {
+          if (p >= end) continue;
+          d = desc();
+          if (d.tag !== 5 || d.len < 2) continue;
+          const ascStart = p, ascLen = d.len;
+          let pos = 0;
+          const rd = nb => {
+            let v = 0;
+            for (let k = 0; k < nb; k++, pos++) {
+              const byte = (pos >> 3) < ascLen ? moov.getUint8(ascStart + (pos >> 3)) : 0;
+              v = v * 2 + ((byte >> (7 - (pos & 7))) & 1);
+            }
+            return v;
+          };
+          let aot = rd(5); if (aot === 31) aot = 32 + rd(6);
+          let fi = rd(4);
+          if (fi === 15) { // 显式采样率 → 映射到最接近的标准档位
+            const freq = rd(24);
+            const rates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+            fi = rates.reduce((bi, r, k) => Math.abs(r - freq) < Math.abs(rates[bi] - freq) ? k : bi, 0);
+          }
+          let ch = rd(4);
+          if (ch < 1 || ch > 7) ch = 2;
+          codec = 'aac';
+          asc = { profile: (aot >= 1 && aot <= 4) ? aot - 1 : 1, fi, ch };
+        }
+      }
+      if (!codec) continue;
+
+      // 样本表
+      const u32 = o => moov.getUint32(o);
+      const sizeConst = u32(t.stsz.s + 4), n = u32(t.stsz.s + 8);
+      if (!n) continue; // 分片 MP4，样本不在 moov 里
+      const sizes = new Uint32Array(n);
+      for (let k = 0; k < n; k++) sizes[k] = sizeConst || u32(t.stsz.s + 12 + k * 4);
+
+      const dts = new Float64Array(n + 1);
+      { let k = 0, cur = 0; const ec = u32(t.stts.s + 4);
+        for (let e = 0; e < ec && k < n; e++) {
+          const cnt = u32(t.stts.s + 8 + e * 8), dl = u32(t.stts.s + 12 + e * 8);
+          for (let c = 0; c < cnt && k < n; c++) { dts[k++] = cur; cur += dl; }
+        }
+        while (k < n) dts[k++] = cur;
+        dts[n] = cur; }
+
+      const co = t.stco || t.co64, is64 = !t.stco;
+      const nco = u32(co.s + 4);
+      const chunkOff = k => is64 ? u32(co.s + 8 + k * 8) * 4294967296 + u32(co.s + 12 + k * 8) : u32(co.s + 8 + k * 4);
+      const offs = new Float64Array(n);
+      { const ec = u32(t.stsc.s + 4); let k = 0;
+        for (let e = 0; e < ec; e++) {
+          const fc = u32(t.stsc.s + 8 + e * 12) - 1, spc = u32(t.stsc.s + 12 + e * 12);
+          const nextFc = e + 1 < ec ? u32(t.stsc.s + 8 + (e + 1) * 12) - 1 : nco;
+          for (let c = fc; c < nextFc && k < n; c++) {
+            let o = chunkOff(c);
+            for (let m = 0; m < spc && k < n; m++) { offs[k] = o; o += sizes[k]; k++; }
+          }
+        } }
+
+      // 编辑列表：开头空白 + 媒体起点
+      let shift = 0;
+      const elst = find(moov, trak, ['edts', 'elst']);
+      if (elst) {
+        const v1 = moov.getUint8(elst.s) === 1, ec = u32(elst.s + 4);
+        let p = elst.s + 8;
+        for (let e = 0; e < ec; e++) {
+          const dur = v1 ? u32(p) * 4294967296 + u32(p + 4) : u32(p);
+          const mt = v1 ? moov.getInt32(p + 8) * 4294967296 + u32(p + 12) : moov.getInt32(p + 4);
+          p += v1 ? 20 : 12;
+          if (mt === -1) { shift += dur / movieTs; continue; }
+          shift -= mt / ts; break;
+        }
+      }
+
+      const time = k => dts[k] / ts + shift;
+      return { file, codec, asc, n, sizes, offs, time, duration: Math.max(0, time(n)) };
+    }
+    return null;
+  }
+
+  // 第 i 段：直接拼出 AAC(ADTS)/MP3 帧，File.slice 是惰性的，不会把整个视频读进内存
+  function mp4Chunk(i) {
+    const m = mp4, t0 = i * CH, t1 = (i + 1) * CH;
+    const lb = x => { let lo = 0, hi = m.n; while (lo < hi) { const mid = (lo + hi) >> 1; if (m.time(mid) < x) lo = mid + 1; else hi = mid; } return lo; };
+    const a = lb(t0), b = lb(t1);
+    if (b <= a) return null;
+    const parts = [];
+    for (let k = a; k < b; k++) {
+      if (m.codec === 'aac') {
+        const len = m.sizes[k] + 7, { profile, fi, ch } = m.asc;
+        parts.push(new Uint8Array([0xFF, 0xF1, (profile << 6) | (fi << 2) | (ch >> 2),
+          ((ch & 3) << 6) | (len >> 11), (len >> 3) & 0xFF, ((len & 7) << 5) | 0x1F, 0xFC]));
+      }
+      parts.push(m.file.slice(m.offs[k], m.offs[k] + m.sizes[k]));
+    }
+    const base = Math.max(0, m.time(a));
+    return {
+      blob: new Blob(parts, { type: m.codec === 'aac' ? 'audio/aac' : 'audio/mp3' }),
+      mime: m.codec === 'aac' ? 'audio/aac' : 'audio/mp3',
+      dur: m.time(b) - m.time(a), base
+    };
+  }
 
   async function decode(buf) {
     let ctx;
@@ -301,7 +508,7 @@
     view.setUint32(24, TARGET_SR, true); view.setUint32(28, TARGET_SR * 2, true);
     view.setUint16(32, 2, true); view.setUint16(34, 16, true); w(36, 'data'); view.setUint32(40, len * 2, true);
     for (let k = 0; k < len; k++) view.setInt16(44 + k * 2, pcm[s0 + Math.floor(k * ratio)], true);
-    return { blob: new Blob([view.buffer], { type: 'audio/wav' }), dur: (s1 - s0) / sr };
+    return { blob: new Blob([view.buffer], { type: 'audio/wav' }), mime: 'audio/wav', dur: (s1 - s0) / sr, base: i * CH };
   }
 
   function blobToB64(blob) {
@@ -368,7 +575,9 @@
     if (!key) { const e = new Error('还没填 API Key'); e.retryAfter = 5000; throw e; }
     const model = modelEl.value;
     const lang = langEl.value.trim() || '简体中文';
-    const { blob, dur } = chunkWav(i);
+    const piece = mp4 ? mp4Chunk(i) : chunkWav(i);
+    if (!piece || piece.dur <= 0.05) return [];
+    const { blob, dur, mime, base } = piece;
     const b64 = await blobToB64(blob);
 
     const prev = (segs[i - 1] || []).slice(-3).map(s => s.text).join(' / ');
@@ -382,7 +591,7 @@ start / end 是这句话在这段音频里的开始和结束秒数（相对本�
 
     const body = {
       contents: [{ parts: [
-        { inline_data: { mime_type: 'audio/wav', data: b64 } },
+        { inline_data: { mime_type: mime, data: b64 } },
         { text: prompt }
       ] }],
       generationConfig: {
@@ -418,7 +627,6 @@ start / end 是这句话在这段音频里的开始和结束秒数（相对本�
     try { arr = JSON.parse(txt); } catch (e) { throw new Error('返回内容解析失败'); }
     if (!Array.isArray(arr)) arr = [];
 
-    const base = i * CH;
     return arr
       .filter(s => s && s.text)
       .map(s => {
