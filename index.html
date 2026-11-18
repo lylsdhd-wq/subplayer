@@ -103,6 +103,11 @@
   .act.on .s { color: rgba(255, 255, 255, .85); }
   .act.on .e { transform: rotate(-12deg) scale(1.15); }
 
+  .regen { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; height: 46px; margin-top: 10px;
+    border-radius: 14px; background: transparent; border: 1px solid var(--line); color: var(--sub); font-size: 14px; font-weight: 600; }
+  .regen .spin { display: inline-block; transition: transform .6s var(--ease); }
+  .regen.go .spin { transform: rotate(360deg); }
+
   /* 设置弹层 */
   .mask { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .5); opacity: 0; pointer-events: none; transition: opacity .3s; }
   .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; max-width: 760px; margin: 0 auto;
@@ -179,6 +184,7 @@
     <button class="act press" id="fullBtn"><span class="e">⚡</span><span class="t">全部生成</span><span class="s">不用边看边等</span></button>
     <button class="act press" id="srtBtn"><span class="e">💾</span><span class="t">导出 SRT</span><span class="s">存成字幕文件</span></button>
   </div>
+  <button class="regen press reveal d3" id="regenBtn"><span class="spin">🔄</span> 重新生成字幕</button>
 </div>
 
 <div class="mask" id="mask"></div>
@@ -213,7 +219,8 @@
   const video = $('video'), statusEl = $('status');
   const ls = {
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+    del(k) { try { localStorage.removeItem(k); } catch (e) {} }
   };
 
   // ---------- 设置 ----------
@@ -434,23 +441,53 @@
   };
 
   // ---------- 读取视频 ----------
-  $('file').onchange = async e => {
-    const file = e.target.files[0];
-    if (!file) return;
+  let curFile = null;
+  $('file').onchange = e => { const f = e.target.files[0]; if (f) openFile(f, false); };
+
+  $('regenBtn').onclick = () => {
+    if (!curFile) return;
+    if (!confirm('把这个视频已经生成的字幕全部清掉，从头重新识别？')) return;
+    const b = $('regenBtn');
+    b.classList.remove('go'); void b.offsetWidth; b.classList.add('go');
+    openFile(curFile, true);
+    toast('🔄 已清掉旧字幕，重新生成中');
+  };
+
+  async function openFile(file, regen) {
+    curFile = file;
+    const keepAudio = regen && (mp4 || pcm);
     baseName = file.name.replace(/\.[^.]+$/, '');
     const my = ++session;
-    pcm = null; state = []; tries = []; segs = []; nChunks = 0; buildMap();
+    if (!keepAudio) { pcm = null; mp4 = null; }
+    state = []; tries = []; segs = []; nChunks = 0; buildMap();
     cacheKey = 'sub_cache:' + file.name + '|' + file.size;
+    if (regen) ls.del(cacheKey);
     $('pickTitle').textContent = file.name;
     $('pickSub').textContent = (file.size / 1048576 >= 1024 ? (file.size / 1073741824).toFixed(2) + ' GB' : (file.size / 1048576).toFixed(1) + ' MB');
     document.body.classList.add('has-video');
     requestAnimationFrame(() => { moveThumb(); requestAnimationFrame(() => document.body.classList.add('shown')); });
 
-    if (video.src) URL.revokeObjectURL(video.src);
-    video.src = URL.createObjectURL(file);
-    for (const t of video.textTracks) t.mode = 'disabled';
-    track = video.addTextTrack('subtitles', '字幕', 'zh');
-    track.mode = 'showing';
+    if (regen && track) {
+      rebuildCues(); // segs 已清空 → 清掉屏幕上的旧字幕，视频继续播
+    } else {
+      if (video.src) URL.revokeObjectURL(video.src);
+      video.src = URL.createObjectURL(file);
+      for (const t of video.textTracks) t.mode = 'disabled';
+      track = video.addTextTrack('subtitles', '字幕', 'zh');
+      track.mode = 'showing';
+    }
+
+    // 重新生成且音轨已经在手：直接开工，不用再抽一遍
+    if (keepAudio) {
+      nChunks = Math.ceil((mp4 ? mp4.duration : pcm.length / sr) / CH);
+      state = new Array(nChunks).fill(0);
+      tries = new Array(nChunks).fill(0);
+      segs = Array.from({ length: nChunks }, () => []);
+      buildMap();
+      setStatus('重新识别中…');
+      for (let i = 0; i < WORKERS; i++) worker(my);
+      return;
+    }
 
     // 有缓存先挂上
     const cache = loadCache();
@@ -469,7 +506,7 @@
     }
 
     // 优先：MP4/MOV 直接从文件里按段切出 AAC/MP3 音频帧，不整体解码，几 GB 的视频也秒开
-    mp4 = null;
+    mp4 = null; pcm = null;
     try { mp4 = await openMp4Audio(file); } catch (err) { mp4 = null; }
     if (my !== session) return;
     if (mp4 && mp4.noAudio) {
@@ -517,7 +554,7 @@
     } catch (err) {
       setStatus('音轨提取失败：' + (err.message || err) + '\n（文件太大或格式不支持时会这样）', true);
     }
-  };
+  }
 
   // ---------- MP4/MOV 音轨直读 ----------
   let mp4 = null;
