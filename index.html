@@ -91,6 +91,31 @@
   .legend { display: flex; gap: 12px; font-size: 11px; color: var(--sub); margin-top: 8px; flex-wrap: wrap; }
   .legend em { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: 0; font-style: normal; }
 
+  /* 字幕列表 */
+  .lyr-wrap { position: relative; margin-top: 10px; }
+  #lyr { position: relative; height: min(42vh, 360px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+    margin: 0 -6px; padding: 4px 0 40% ;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 28px), transparent);
+            mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 28px), transparent); }
+  .lyr-empty { color: var(--sub); font-size: 13px; text-align: center; padding: 48px 12px; line-height: 1.8; }
+  .ln { display: flex; gap: 10px; padding: 9px 10px; border-radius: 12px; cursor: pointer; opacity: .55;
+    transition: opacity .35s var(--ease), background .35s var(--ease), transform .35s var(--ease); transform-origin: left center; }
+  .ln:active { background: var(--card2); }
+  .ln time { flex: none; width: 44px; font-size: 12px; color: var(--sub); font-variant-numeric: tabular-nums; padding-top: 3px; }
+  .ln div { min-width: 0; flex: 1; }
+  .ln p { margin: 0; font-size: 15px; line-height: 1.45; word-break: break-word; }
+  .ln p + p { font-size: 13px; color: var(--sub); margin-top: 2px; }
+  .ln.past { opacity: .4; }
+  .ln.on { opacity: 1; background: rgba(10, 132, 255, .14); transform: scale(1.015); }
+  .ln.on time { color: var(--accent); font-weight: 600; }
+  .ln.on p + p { color: #c9c9d1; }
+  .ln.new { animation: lnIn .5s var(--ease) both; }
+  .follow { position: absolute; right: 6px; bottom: 6px; padding: 8px 12px; border-radius: 99px; font-size: 13px; font-weight: 600;
+    background: var(--accent); color: #fff; box-shadow: 0 6px 18px rgba(10, 132, 255, .4);
+    opacity: 0; transform: translateY(10px) scale(.9); pointer-events: none; transition: opacity .25s, transform .35s var(--ease); }
+  .follow.show { opacity: 1; transform: none; pointer-events: auto; }
+  @keyframes lnIn { from { opacity: 0; transform: translateY(8px); } }
+
   /* 分段切换：滑块 */
   .seg { position: relative; display: flex; padding: 3px; border-radius: 12px; background: var(--card2); }
   .seg button { position: relative; z-index: 1; flex: 1; height: 38px; font-size: 14px; font-weight: 600; color: var(--sub); transition: color .3s; }
@@ -169,6 +194,14 @@
   </label>
 
   <div class="player"><video id="video" controls playsinline></video></div>
+
+  <div class="card reveal d1 lyr-card">
+    <div class="prog-top"><b>字幕列表</b><span id="lyrCount">0 句</span></div>
+    <div class="lyr-wrap">
+      <div id="lyr"><div class="lyr-empty">字幕生成出来后会按时间出现在这里<br>点任意一句，视频就跳过去</div></div>
+      <button class="follow press" id="followBtn">📍 回到当前</button>
+    </div>
+  </div>
 
   <div class="card reveal d1">
     <div class="prog-top"><b>字幕进度</b><span id="count">0 / 0</span></div>
@@ -425,10 +458,64 @@
     } catch (e) {}
   }
   function rebuildCues() {
+    renderList();
     if (!track) return;
     while (track.cues && track.cues.length) track.removeCue(track.cues[0]);
     segs.flat().forEach(addCue);
   }
+
+  // ---------- 字幕列表（跟着播放高亮滚动，点一句跳过去） ----------
+  const lyrEl = $('lyr'), followBtn = $('followBtn');
+  let lines = [], rows = [], seen = new Set(), activeIdx = -1, follow = true, lyrTimer = 0;
+  const esc = t => t.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]);
+  function renderList() {
+    lines = segs.flat().slice().sort((a, b) => a.start - b.start);
+    $('lyrCount').textContent = lines.length + ' 句';
+    if (!lines.length) {
+      lyrEl.innerHTML = '<div class="lyr-empty">字幕生成出来后会按时间出现在这里<br>点任意一句，视频就跳过去</div>';
+      rows = []; seen = new Set(); activeIdx = -1; return;
+    }
+    const keep = lyrEl.scrollTop, frag = document.createDocumentFragment(), now = new Set();
+    rows = lines.map((s, k) => {
+      const key = s.start.toFixed(2) + s.text;
+      now.add(key);
+      const el = document.createElement('div');
+      el.className = 'ln' + (seen.size && !seen.has(key) ? ' new' : '');
+      const main = mode === 'tr' ? (s.tr || s.text) : s.text;
+      const sub = mode === 'both' && s.tr && s.tr !== s.text ? `<p>${esc(s.tr)}</p>` : '';
+      el.innerHTML = `<time>${fmt(s.start)}</time><div><p>${esc(main)}</p>${sub}</div>`;
+      el.onclick = () => { video.currentTime = s.start + 0.01; follow = true; followBtn.classList.remove('show'); syncList(true); };
+      frag.appendChild(el);
+      return el;
+    });
+    seen = now;
+    lyrEl.innerHTML = ''; lyrEl.appendChild(frag);
+    lyrEl.scrollTop = keep;
+    activeIdx = -1; syncList(false);
+  }
+  function syncList(smooth) {
+    if (!rows.length) return;
+    const t = video.currentTime || 0;
+    let lo = 0, hi = lines.length - 1, k = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (lines[m].start <= t + 0.05) { k = m; lo = m + 1; } else hi = m - 1; }
+    if (k !== activeIdx) {
+      rows.forEach((r, j) => r.classList.toggle('past', j < k && lines[j].end < t));
+      if (rows[activeIdx]) rows[activeIdx].classList.remove('on');
+      if (rows[k]) rows[k].classList.add('on');
+      activeIdx = k;
+      if (follow && rows[k]) {
+        const top = rows[k].offsetTop - lyrEl.clientHeight * 0.3;
+        lyrEl.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' });
+      }
+    }
+  }
+  video.addEventListener('timeupdate', () => syncList(true));
+  video.addEventListener('seeked', () => { activeIdx = -2; syncList(true); });
+  // 手动翻看时暂停跟随，出现「回到当前」
+  const stopFollow = () => { follow = false; followBtn.classList.add('show'); };
+  lyrEl.addEventListener('touchstart', stopFollow, { passive: true });
+  lyrEl.addEventListener('wheel', stopFollow, { passive: true });
+  followBtn.onclick = () => { follow = true; followBtn.classList.remove('show'); activeIdx = -2; syncList(true); };
 
   // ---------- 全部预生成 ----------
   let fullMode = false;
@@ -495,6 +582,7 @@
     const my = ++session;
     if (!keepAudio) { pcm = null; mp4 = null; }
     state = []; tries = []; segs = []; nChunks = 0; buildMap();
+    seen = new Set(); follow = true; followBtn.classList.remove('show'); renderList();
     cacheKey = 'sub_cache:' + file.name + '|' + file.size;
     if (regen) ls.del(cacheKey);
     $('pickTitle').textContent = file.name;
@@ -922,6 +1010,7 @@
         segs[i] = list;
         list.forEach(addCue);
         state[i] = 2; paint(i);
+        if (list.length) renderList();
         saveCache();
         updateProgress();
       } catch (err) {
