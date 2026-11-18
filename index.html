@@ -206,7 +206,7 @@
     <span class="ico" id="pickIco">🎬</span>
     <div><b id="pickTitle">选一个本地视频或音频</b><small id="pickSub">MP4 / MOV / M4A 最快，几 GB 也能秒开</small></div>
     <span class="chg">换一个</span>
-    <input id="file" type="file" accept="video/*,audio/*">
+    <input id="file" type="file"><!-- 故意不写 accept：iOS 对 audio/* 过滤有 bug，文件 App 里的音频会变灰选不了 -->
   </label>
 
   <div class="player">
@@ -604,7 +604,15 @@
 
   // ---------- 读取视频 ----------
   let curFile = null;
-  $('file').onchange = e => { const f = e.target.files[0]; if (f) openFile(f, false); };
+  const MEDIA_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|3gp|ts|mts|m2ts|flv|wmv|mp3|m4a|m4b|aac|wav|flac|ogg|oga|opus|amr|aiff?|caf|wma)$/i;
+  $('file').onchange = e => {
+    const f = e.target.files[0];
+    e.target.value = ''; // 允许再次选同一个文件
+    if (!f) return;
+    const ok = /^(video|audio)\//.test(f.type) || MEDIA_EXT.test(f.name) || !f.type;
+    if (!ok) return toast('🙈 这个好像不是视频或音频文件');
+    openFile(f, false);
+  };
 
   $('regenBtn').onclick = () => {
     if (!curFile) return;
