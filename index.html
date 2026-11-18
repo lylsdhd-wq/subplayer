@@ -79,6 +79,14 @@
     linear-gradient(to bottom, rgba(0,0,0,.22) 0%, transparent 16%, transparent 56%, rgba(0,0,0,.5) 78%, rgba(0,0,0,.72) 100%); }
   @keyframes drift { from { transform: scale(1.04); } to { transform: scale(1.14) translate(-2%, -1.5%); } }
 
+  /* 播放中一段时间不操作：控件淡出，只留背景和字幕 */
+  .now-top, .ctrl { transition: opacity .6s var(--ease), transform .6s var(--ease); }
+  .shade { transition: opacity .8s var(--ease); }
+  .lyric { transition: transform .7s var(--ease); }
+  .calm .now-top { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+  .calm .ctrl { opacity: 0; transform: translateY(12px); pointer-events: none; }
+  .calm .shade { opacity: .35; }
+  .calm .lyric { transform: translateY(24px); }
   .now-top { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 12px 0; }
   .glass { white-space: nowrap; height: 34px; min-width: 34px; padding: 0 10px; border-radius: 99px; display: inline-flex; align-items: center; justify-content: center; gap: 4px;
     font-size: 13px; font-weight: 600; color: #fff; background: rgba(255,255,255,.14);
@@ -679,8 +687,20 @@
     }
   }
   video.addEventListener('timeupdate', () => syncList(true));
-  video.addEventListener('play', () => { document.body.classList.add('playing'); tick(); });
-  video.addEventListener('pause', () => document.body.classList.remove('playing'));
+  video.addEventListener('play', () => { document.body.classList.add('playing'); tick(); wake(); });
+  video.addEventListener('pause', () => { document.body.classList.remove('playing'); wake(); });
+
+  // 控件自动淡出：播放中 3 秒没操作就隐藏，点一下卡片再出现
+  const nowEl = $('now');
+  let calmT = 0;
+  function wake() {
+    clearTimeout(calmT);
+    nowEl.classList.remove('calm');
+    if (!video.paused && isAudio) calmT = setTimeout(() => { if (!dragging && !video.paused) nowEl.classList.add('calm'); }, 3000);
+  }
+  // 隐藏时控件 pointer-events: none，所以这一下只会唤出，不会误触按钮
+  nowEl.addEventListener('pointerdown', wake, true);
+  video.addEventListener('seeked', () => { if (!nowEl.classList.contains('calm')) wake(); });
   video.addEventListener('ended', () => document.body.classList.remove('playing'));
 
   // ---------- 音频播放条（自制） ----------
