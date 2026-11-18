@@ -58,20 +58,61 @@
   video::cue { font-size: .9em; background: rgba(0, 0, 0, .6); }
 
   /* 音频模式：大字显示当前这句 + 细长播放条 */
+  /* 音频模式：背景图 + 大字当前句 + 自制播放条（不用系统播放条，避免样式打架） */
   .now { display: none; }
-  .is-audio .player { background: radial-gradient(120% 140% at 0% 0%, #2a2f6b 0%, #1a1530 45%, #121216 100%); }
-  .is-audio .now { display: flex; flex-direction: column; justify-content: center; min-height: 190px; padding: 22px 20px 10px; text-align: center; }
-  .is-audio video { height: 54px; background: transparent; }
-  .now p { margin: 0; transition: opacity .3s var(--ease), transform .4s var(--ease); }
-  #nowSrc { font-size: 21px; font-weight: 700; line-height: 1.45; }
-  #nowTr { font-size: 15px; color: #b9b9c6; margin-top: 8px; line-height: 1.5; min-height: 1.5em; }
-  .now.swap p { opacity: 0; transform: translateY(6px); }
-  .eq { display: flex; gap: 3px; justify-content: center; align-items: flex-end; height: 16px; margin-bottom: 14px; opacity: .5; }
-  .eq i { width: 3px; height: 4px; border-radius: 2px; background: #fff; }
-  .playing .eq { opacity: .9; }
-  .playing .eq i { animation: eq 1s ease-in-out infinite; }
-  .playing .eq i:nth-child(2) { animation-delay: -.3s; } .playing .eq i:nth-child(3) { animation-delay: -.6s; } .playing .eq i:nth-child(4) { animation-delay: -.15s; }
-  @keyframes eq { 0%, 100% { height: 4px; } 50% { height: 16px; } }
+  .is-audio video { display: none; }
+  .is-audio .player { background: #111; }
+  .is-audio .now { display: flex; flex-direction: column; position: relative; height: clamp(320px, 56vh, 480px); isolation: isolate;
+    user-select: none; -webkit-user-select: none; }
+  .art, .shade { position: absolute; inset: 0; z-index: -1; }
+  .art { background: radial-gradient(120% 120% at 0% 0%, #34397a 0%, #1d1838 50%, #121216 100%) center / cover no-repeat;
+    transition: opacity .6s var(--ease); animation: drift 38s ease-in-out infinite alternate; animation-play-state: paused; }
+  .playing .art { animation-play-state: running; }
+  .art.fade { opacity: 0; }
+  .shade { background:
+    radial-gradient(90% 38% at 50% 48%, rgba(0,0,0,.38), transparent 75%),
+    linear-gradient(to bottom, rgba(0,0,0,.4) 0%, rgba(0,0,0,.18) 22%, rgba(0,0,0,.22) 50%, rgba(0,0,0,.78) 76%, rgba(0,0,0,.9) 100%); }
+  @keyframes drift { from { transform: scale(1.04); } to { transform: scale(1.14) translate(-2%, -1.5%); } }
+
+  .now-top { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 12px 0; }
+  .glass { white-space: nowrap; height: 34px; min-width: 34px; padding: 0 10px; border-radius: 99px; display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+    font-size: 13px; font-weight: 600; color: #fff; background: rgba(255,255,255,.14);
+    backdrop-filter: blur(16px) saturate(160%); -webkit-backdrop-filter: blur(16px) saturate(160%); }
+  .glass svg { width: 17px; height: 17px; }
+  .glass[hidden] { display: none; }
+  .bg-in { display: none; }
+
+  .lyric { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 0 22px; text-align: center; min-height: 0; }
+  .lyric p { margin: 0; text-shadow: 0 1px 3px rgba(0,0,0,.65), 0 4px 22px rgba(0,0,0,.6); transition: opacity .3s var(--ease), transform .45s var(--ease), filter .3s; }
+  #nowSrc { font-size: 22px; font-weight: 700; line-height: 1.45; }
+  #nowTr { font-size: 15px; color: rgba(255,255,255,.78); margin-top: 8px; line-height: 1.5; min-height: 1.5em; }
+  .lyric.swap p { opacity: 0; transform: translateY(8px); filter: blur(3px); }
+  .lyric.idle #nowSrc { font-size: 30px; opacity: .55; }
+
+  .ctrl { padding: 0 18px 16px; }
+  .seek { position: relative; height: 28px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+  .seek .rail { position: relative; width: 100%; height: 4px; border-radius: 4px; background: rgba(255,255,255,.22); overflow: hidden;
+    transition: height .2s var(--ease); }
+  .seek .fill { position: absolute; inset: 0; background: #fff; transform-origin: left; transform: scaleX(0); will-change: transform; }
+  .seek .knob { position: absolute; top: 50%; left: 0; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4); transform: scale(0); transition: transform .2s var(--ease); will-change: left; pointer-events: none; }
+  .seek:hover .knob, .seek.drag .knob { transform: scale(1); }
+  .seek.drag .rail { height: 7px; }
+  .times { display: flex; justify-content: space-between; font-size: 11px; color: rgba(255,255,255,.7); font-variant-numeric: tabular-nums; margin-top: -2px; }
+  .btns { display: grid; grid-template-columns: 1fr auto auto auto 1fr; align-items: center; gap: 14px; margin-top: 6px; }
+  .btns .ic { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; color: #fff; }
+  .btns .ic svg { width: 26px; height: 26px; }
+  .btns .ic:active { background: rgba(255,255,255,.12); }
+  .btns .pp { width: 62px; height: 62px; background: #fff; color: #111; box-shadow: 0 6px 20px rgba(0,0,0,.35); }
+  .btns .pp:active { background: #e8e8e8; }
+  .pp svg { width: 28px; height: 28px; position: absolute; transition: opacity .2s, transform .3s var(--ease); }
+  .pp { position: relative; }
+  .pp .i-pause { opacity: 0; transform: scale(.6) rotate(-30deg); }
+  .playing .pp .i-play { opacity: 0; transform: scale(.6) rotate(30deg); }
+  .playing .pp .i-pause { opacity: 1; transform: none; }
+  .speed, .listbtn { width: 46px; height: 34px; padding: 0; }
+  .speed { justify-self: start; }
+  .listbtn { justify-self: end; }
 
   /* 进入动画：选完视频后控制区依次浮现 */
   .reveal { opacity: 0; transform: translateY(14px); pointer-events: none;
@@ -210,7 +251,31 @@
   </label>
 
   <div class="player">
-    <div class="now" id="now"><div class="eq"><i></i><i></i><i></i><i></i></div><p id="nowSrc">♪</p><p id="nowTr"></p></div>
+    <div class="now" id="now">
+      <div class="art" id="art"></div><div class="shade"></div>
+      <div class="now-top">
+        <button class="glass press" id="bgDel" hidden aria-label="去掉背景图">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        <label class="glass press" aria-label="换背景图">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg>
+          <span>背景</span><input class="bg-in" id="bgIn" type="file" accept="image/*"></label>
+      </div>
+      <div class="lyric idle" id="lyric"><p id="nowSrc">♪</p><p id="nowTr"></p></div>
+      <div class="ctrl">
+        <div class="seek" id="seek"><div class="rail"><div class="fill" id="fill"></div></div><div class="knob" id="knob"></div></div>
+        <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
+        <div class="btns">
+          <button class="glass press speed" id="speedBtn">1×</button>
+          <button class="ic press" id="prevBtn" aria-label="上一句"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 6.5v11a1 1 0 0 1-1.5.86l-9-5.5a1 1 0 0 1 0-1.72l9-5.5A1 1 0 0 1 20 6.5z"/></svg></button>
+          <button class="ic pp press" id="ppBtn" aria-label="播放/暂停">
+            <svg class="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.6v12.8a1 1 0 0 0 1.52.85l10.4-6.4a1 1 0 0 0 0-1.7L9.52 4.75A1 1 0 0 0 8 5.6z"/></svg>
+            <svg class="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>
+          </button>
+          <button class="ic press" id="nextBtn" aria-label="下一句"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 6.5v11a1 1 0 0 0 1.5.86l9-5.5a1 1 0 0 0 0-1.72l-9-5.5A1 1 0 0 0 4 6.5z"/></svg></button>
+          <button class="glass press listbtn" id="listBtn" aria-label="字幕列表"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h7M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg></button>
+        </div>
+      </div>
+    </div>
     <video id="video" controls playsinline></video>
   </div>
 
@@ -527,14 +592,16 @@
     const key = s ? s.start + s.text + mode : '';
     if (key === nowKey) return;
     nowKey = key;
-    const box = $('now');
+    const box = $('lyric');
     box.classList.add('swap');
-    setTimeout(() => {
+    clearTimeout(setNow.t);
+    setNow.t = setTimeout(() => {
       const main = !s ? '♪' : mode === 'tr' ? (s.tr || s.text) : s.text;
       $('nowSrc').textContent = main;
       $('nowTr').textContent = s && mode === 'both' && s.tr && s.tr !== s.text ? s.tr : '';
+      box.classList.toggle('idle', !s);
       box.classList.remove('swap');
-    }, 160);
+    }, 180);
   }
   function syncList(smooth) {
     if (isAudio) {
@@ -557,8 +624,102 @@
     }
   }
   video.addEventListener('timeupdate', () => syncList(true));
-  video.addEventListener('play', () => document.body.classList.add('playing'));
+  video.addEventListener('play', () => { document.body.classList.add('playing'); tick(); });
   video.addEventListener('pause', () => document.body.classList.remove('playing'));
+  video.addEventListener('ended', () => document.body.classList.remove('playing'));
+
+  // ---------- 音频播放条（自制） ----------
+  const seekEl = $('seek'), fillEl = $('fill'), knobEl = $('knob');
+  let dragging = false, raf = 0;
+  const durOf = () => (isFinite(video.duration) && video.duration) || nChunks * CH || 0;
+  function drawBar(t) {
+    const d = durOf(), f = d ? Math.max(0, Math.min(1, t / d)) : 0;
+    fillEl.style.transform = `scaleX(${f})`;
+    knobEl.style.left = (f * 100) + '%';
+    $('tCur').textContent = fmt(t);
+    $('tDur').textContent = d ? '-' + fmt(Math.max(0, d - t)) : '0:00';
+  }
+  function tick() { // 播放时用 rAF 刷新，进度条才会顺滑（timeupdate 一秒只有 4 次）
+    cancelAnimationFrame(raf);
+    if (!isAudio) return;
+    if (!dragging) drawBar(video.currentTime || 0);
+    if (!video.paused) raf = requestAnimationFrame(tick);
+  }
+  ['loadedmetadata', 'seeked', 'durationchange'].forEach(ev => video.addEventListener(ev, () => { if (!dragging) drawBar(video.currentTime || 0); }));
+  const posAt = e => { const r = seekEl.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * durOf(); };
+  seekEl.addEventListener('pointerdown', e => {
+    dragging = true; seekEl.classList.add('drag'); seekEl.setPointerCapture(e.pointerId); drawBar(posAt(e));
+  });
+  seekEl.addEventListener('pointermove', e => { if (dragging) drawBar(posAt(e)); });
+  const endDrag = e => { if (!dragging) return; dragging = false; seekEl.classList.remove('drag'); seekTo(posAt(e)); };
+  seekEl.addEventListener('pointerup', endDrag);
+  seekEl.addEventListener('pointercancel', () => { dragging = false; seekEl.classList.remove('drag'); });
+
+  $('ppBtn').onclick = () => { if (video.paused) video.play().catch(() => {}); else video.pause(); };
+  // 上一句 / 下一句（还没字幕时退一步 / 进一步 10 秒）
+  function jumpLine(dir) {
+    const t = video.currentTime || 0;
+    if (!lines.length) return seekTo(Math.max(0, Math.min(durOf(), t + dir * 10)));
+    let k = -1;
+    for (let j = 0; j < lines.length; j++) if (lines[j].start <= t + 0.05) k = j; else break;
+    if (dir < 0) {
+      // 当前句开头 1.5 秒以后点「上一句」= 回到本句开头，像音乐 App 一样
+      const j = k >= 0 && t - lines[k].start > 1.5 ? k : k - 1;
+      seekTo(j >= 0 ? lines[j].start + 0.01 : 0);
+    } else if (k + 1 < lines.length) seekTo(lines[k + 1].start + 0.01);
+  }
+  $('prevBtn').onclick = () => jumpLine(-1);
+  $('nextBtn').onclick = () => jumpLine(1);
+  const SPEEDS = [1, 1.25, 1.5, 0.75];
+  let speedIdx = 0;
+  $('speedBtn').onclick = () => {
+    speedIdx = (speedIdx + 1) % SPEEDS.length;
+    video.playbackRate = SPEEDS[speedIdx];
+    $('speedBtn').textContent = SPEEDS[speedIdx] + '×';
+  };
+  video.addEventListener('loadedmetadata', () => { video.playbackRate = SPEEDS[speedIdx]; });
+  $('listBtn').onclick = () => document.querySelector('.lyr-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  // ---------- 背景图（存在本机 IndexedDB，下次自动用） ----------
+  const idb = (() => {
+    let dbp = null;
+    const open = () => dbp || (dbp = new Promise((res, rej) => {
+      const r = indexedDB.open('subplayer', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    }));
+    const run = (mode, fn) => open().then(db => new Promise((res, rej) => {
+      const tx = db.transaction('kv', mode), req = fn(tx.objectStore('kv'));
+      tx.oncomplete = () => res(req.result); tx.onerror = () => rej(tx.error);
+    }));
+    return {
+      get: k => run('readonly', st => st.get(k)).catch(() => null),
+      set: (k, v) => run('readwrite', st => st.put(v, k)).catch(() => {}),
+      del: k => run('readwrite', st => st.delete(k)).catch(() => {})
+    };
+  })();
+  let bgUrl = '';
+  function showBg(blob) {
+    const art = $('art');
+    art.classList.add('fade');
+    setTimeout(() => {
+      if (bgUrl) URL.revokeObjectURL(bgUrl);
+      bgUrl = blob ? URL.createObjectURL(blob) : '';
+      art.style.backgroundImage = bgUrl ? `url("${bgUrl}")` : '';
+      $('bgDel').hidden = !blob;
+      const img = new Image();
+      img.onload = img.onerror = () => art.classList.remove('fade');
+      if (bgUrl) img.src = bgUrl; else art.classList.remove('fade');
+    }, bgUrl || blob ? 300 : 0);
+  }
+  $('bgIn').onchange = e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    if (!/^image\//.test(f.type)) return toast('🙈 请选一张图片');
+    showBg(f); idb.set('bg', f); toast('🖼 背景换好了，下次也会用这张');
+  };
+  $('bgDel').onclick = () => { showBg(null); idb.del('bg'); toast('已去掉背景图'); };
+  idb.get('bg').then(b => { if (b) showBg(b); });
   video.addEventListener('seeked', () => { activeIdx = -2; syncList(true); });
   // 手动翻看时暂停跟随，出现「回到当前」
   const stopFollow = () => { follow = false; followBtn.classList.add('show'); };
@@ -648,6 +809,7 @@
     document.body.classList.toggle('is-audio', isAudio);
     $('pickIco').textContent = isAudio ? '🎧' : '🎬';
     setNow(null);
+    drawBar(0);
     document.body.classList.add('has-video');
     requestAnimationFrame(() => { moveThumb(); requestAnimationFrame(() => document.body.classList.add('shown')); });
 
