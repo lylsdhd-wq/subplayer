@@ -81,6 +81,13 @@
   #status { font-size: 13px; color: var(--sub); min-height: 1.4em; white-space: pre-wrap; line-height: 1.5; transition: color .3s; }
   #status.err { color: var(--red); }
   #status.flash { animation: fadeUp .35s var(--ease); }
+  .retry { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; border-radius: 12px;
+    background: rgba(255, 95, 87, .14); color: var(--red); font-size: 14px; font-weight: 600;
+    max-height: 0; margin: 0; opacity: 0; overflow: hidden; pointer-events: none;
+    transition: max-height .4s var(--ease), margin .4s var(--ease), opacity .3s, transform .18s var(--ease); }
+  .retry.show { max-height: 44px; height: 44px; margin: 10px 0 2px; opacity: 1; pointer-events: auto; }
+  .retry .spin { display: inline-block; transition: transform .6s var(--ease); }
+  .retry.go .spin { transform: rotate(360deg); }
   .legend { display: flex; gap: 12px; font-size: 11px; color: var(--sub); margin-top: 8px; flex-wrap: wrap; }
   .legend em { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: 0; font-style: normal; }
 
@@ -167,7 +174,8 @@
     <div class="prog-top"><b>字幕进度</b><span id="count">0 / 0</span></div>
     <div id="map" title="点一下跳到那里"><span id="head"></span></div>
     <div id="status"></div>
-    <div class="legend"><span><em style="background:var(--green)"></em>已完成</span><span><em style="background:var(--accent)"></em>识别中</span><span><em style="background:#2a2a2f"></em>待识别</span><span><em style="background:var(--red)"></em>失败（点它重试）</span></div>
+    <button class="retry press" id="retryBtn"><span class="spin">🔁</span> <span id="retryTxt">重试失败的段</span></button>
+    <div class="legend"><span><em style="background:var(--green)"></em>已完成</span><span><em style="background:var(--accent)"></em>识别中</span><span><em style="background:#2a2a2f"></em>待识别</span><span><em style="background:var(--red)"></em>失败</span></div>
   </div>
 
   <div class="card reveal d2">
@@ -358,7 +366,24 @@
   function renderCount() {
     const done = state.filter(s => s === 2).length;
     countEl.textContent = `${done} / ${nChunks} 段`;
+    const failed = state.filter(s => s === 3).length;
+    $('retryBtn').classList.toggle('show', failed > 0);
+    if (failed) $('retryTxt').textContent = `重试失败的 ${failed} 段`;
   }
+  function retry(list) {
+    list.forEach(k => { state[k] = 0; tries[k] = 0; paint(k); });
+    renderCount();
+  }
+  $('retryBtn').onclick = () => {
+    const list = [];
+    state.forEach((s, k) => { if (s === 3) list.push(k); });
+    if (!list.length) return;
+    const b = $('retryBtn');
+    b.classList.remove('go'); void b.offsetWidth; b.classList.add('go');
+    retry(list);
+    setStatus(`🔁 ${list.length} 段重新排队了`);
+    toast(`🔁 ${list.length} 段重新排队了`);
+  };
   function moveHead() {
     const d = video.duration || nChunks * CH;
     headEl.style.left = d ? Math.min(100, (video.currentTime || 0) / d * 100) + '%' : '0';
@@ -370,12 +395,13 @@
     const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
     video.currentTime = f * video.duration;
     moveHead();
-    // 点到红格（失败跳过的段）就重新排队
-    const i = Math.min(nChunks - 1, Math.floor(f * nChunks));
+    // 点到红格附近（手指宽度 ±14px 内）就把那些失败段重新排队
+    const x = e.clientX - r.left, tol = 14;
+    const lo = Math.max(0, Math.floor((x - tol) / r.width * nChunks)), hi = Math.min(nChunks - 1, Math.floor((x + tol) / r.width * nChunks));
     const fail = [];
-    for (let k = Math.max(0, i - 1); k <= Math.min(nChunks - 1, i + 1); k++) if (state[k] === 3) fail.push(k);
+    for (let k = lo; k <= hi; k++) if (state[k] === 3) fail.push(k);
     if (fail.length) {
-      fail.forEach(k => { state[k] = 0; tries[k] = 0; paint(k); });
+      retry(fail);
       toast(`🔁 第 ${fail.map(k => k + 1).join('、')} 段重新排队了`);
     }
   });
@@ -902,7 +928,7 @@
         if (my !== session) return;
         tries[i]++;
         state[i] = tries[i] >= 3 ? 3 : 0; paint(i);
-        setStatus(`第 ${i + 1} 段出错：${err.message}` + (state[i] === 3 ? '（已跳过，点进度条上的红格可以重试）' : '（稍后重试）'), true);
+        setStatus(`第 ${i + 1} 段出错：${err.message}` + (state[i] === 3 ? '（已跳过，可以点下面的按钮重试）' : '（稍后重试）'), true);
         await sleep(err.retryAfter || 3000);
       }
     }
