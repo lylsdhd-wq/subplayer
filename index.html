@@ -472,6 +472,12 @@
     mp4 = null;
     try { mp4 = await openMp4Audio(file); } catch (err) { mp4 = null; }
     if (my !== session) return;
+    if (mp4 && mp4.noAudio) {
+      mp4 = null;
+      setStatus('🔇 这个视频没有声音（没有音轨），没法生成字幕');
+      toast('🔇 这个视频没有音轨');
+      return;
+    }
     if (mp4) {
       if (!nChunks) {
         nChunks = Math.ceil(mp4.duration / CH);
@@ -495,6 +501,10 @@
       if (my !== session) return;
       sr = audio.sampleRate;
       pcm = toMonoInt16(audio);
+      if (maxLevel(levelsOf(pcm, sr, 0, pcm.length, 32768)) < SILENT) {
+        setStatus('🔇 这个视频是静音的，没法生成字幕');
+        return;
+      }
       if (!nChunks) {
         nChunks = Math.ceil(audio.duration / CH);
         state = new Array(nChunks).fill(0);
@@ -552,12 +562,14 @@
     };
 
     const root = { s: 0, e: moov.byteLength };
+    let sawSound = false;
     const mvhd = find(moov, root, ['mvhd']);
     const movieTs = mvhd ? moov.getUint32(mvhd.s + (moov.getUint8(mvhd.s) === 1 ? 20 : 12)) : 1000;
 
     for (const trak of kids(moov, 0, moov.byteLength).filter(b => b.type === 'trak')) {
       const hdlr = find(moov, trak, ['mdia', 'hdlr']);
       if (!hdlr || fourcc(moov, hdlr.s + 8) !== 'soun') continue;
+      sawSound = true;
       const mdhd = find(moov, trak, ['mdia', 'mdhd']);
       const stbl = find(moov, trak, ['mdia', 'minf', 'stbl']);
       if (!mdhd || !stbl) continue;
@@ -671,7 +683,7 @@
       const time = k => dts[k] / ts + shift;
       return { file, codec, asc, n, sizes, offs, time, duration: Math.max(0, time(n)) };
     }
-    return null;
+    return sawSound ? null : { noAudio: true }; // 有音轨但格式不认识 → 走兜底
   }
 
   // 第 i 段：直接拼出 AAC(ADTS)/MP3 帧，File.slice 是惰性的，不会把整个视频读进内存
@@ -695,6 +707,50 @@
       mime: m.codec === 'aac' ? 'audio/aac' : 'audio/mp3',
       dur: m.time(b) - m.time(a), base
     };
+  }
+
+  // ---------- 静音检测：防止 Gemini 对着没声音的音频编台词 ----------
+  const SILENT = 0.006;   // 50ms 窗口 RMS 低于这个当作没声音（约 -44 dBFS）
+  const WIN = 0.05;
+  function levelsOf(arr, rate, s0, s1, scale) {
+    const w = Math.max(1, Math.round(rate * WIN)), n = Math.ceil((s1 - s0) / w);
+    const out = new Float32Array(n);
+    for (let k = 0; k < n; k++) {
+      const a = s0 + k * w, b = Math.min(s1, a + w);
+      let sum = 0;
+      for (let j = a; j < b; j++) { const v = arr[j] / scale; sum += v * v; }
+      out[k] = Math.sqrt(sum / Math.max(1, b - a));
+    }
+    return out;
+  }
+  function maxLevel(lv, t0 = 0, t1 = Infinity) {
+    let m = 0;
+    const a = Math.max(0, Math.floor(t0 / WIN)), b = Math.min(lv.length, Math.ceil(t1 / WIN));
+    for (let k = a; k < b; k++) if (lv[k] > m) m = lv[k];
+    return m;
+  }
+  // 拿到这一段的音量曲线；解码不了就返回 null（不做检测，照常识别）
+  async function chunkLevels(i, piece) {
+    if (!mp4) {
+      const s0 = Math.floor(i * CH * sr), s1 = Math.min(pcm.length, Math.floor((i + 1) * CH * sr));
+      return levelsOf(pcm, sr, s0, s1, 32768);
+    }
+    try {
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      const ctx = new OAC(1, 1, TARGET_SR);
+      const buf = await piece.blob.arrayBuffer();
+      const ab = await new Promise((res, rej) => {
+        const p = ctx.decodeAudioData(buf, res, rej);
+        if (p && p.then) p.then(res, rej);
+      });
+      const d0 = ab.getChannelData(0), n = ab.length;
+      let mono = d0;
+      if (ab.numberOfChannels > 1) {
+        mono = new Float32Array(n);
+        for (let c = 0; c < ab.numberOfChannels; c++) { const d = ab.getChannelData(c); for (let k = 0; k < n; k++) mono[k] += d[k] / ab.numberOfChannels; }
+      }
+      return levelsOf(mono, ab.sampleRate, 0, n, 1);
+    } catch (e) { return null; }
   }
 
   async function decode(buf) {
@@ -805,6 +861,8 @@
     const piece = mp4 ? mp4Chunk(i) : chunkWav(i);
     if (!piece || piece.dur <= 0.05) return [];
     const { blob, dur, mime, base } = piece;
+    const lv = await chunkLevels(i, piece);
+    if (lv && maxLevel(lv) < SILENT) return []; // 整段静音，不用问 Gemini
     const b64 = await blobToB64(blob);
 
     const prev = (segs[i - 1] || []).slice(-3).map(s => s.text).join(' / ');
@@ -813,7 +871,8 @@
 请把里面所有人声对白逐句转写成原语言文字（text），并给每句附上${lang}翻译（tr）；如果原文已经是${lang}，tr 和 text 相同。
 start / end 是这句话在这段音频里的开始和结束秒数（相对本段，0 到 ${dur.toFixed(1)} 之间，保留一位小数）。
 每句控制在一行字幕的长度，长句拆开。
-没有人声（纯音乐、静音、环境声）就返回空数组。听不清的地方不要编造。` +
+没有人声（纯音乐、静音、环境声、噪音）就必须返回空数组 []。
+绝对不要编造：只输出这段音频里真实听到的话，不要补充任何常见的电影台词、客套话、片头片尾字幕或"感谢观看"之类的内容。` +
       (prev ? `\n上一段结尾的台词（仅供理解语境，不要重复输出）：${prev}` : '');
 
     const body = {
@@ -822,7 +881,7 @@ start / end 是这句话在这段音频里的开始和结束秒数（相对本�
         { text: prompt }
       ] }],
       generationConfig: {
-        temperature: 0.2,
+        temperature: 0,
         responseMimeType: 'application/json',
         responseSchema: {
           type: 'ARRAY',
@@ -860,8 +919,11 @@ start / end 是这句话在这段音频里的开始和结束秒数（相对本�
         let a = Math.max(0, Math.min(dur, +s.start || 0));
         let b = Math.max(0, Math.min(dur, +s.end || 0));
         if (b <= a) b = Math.min(dur, a + 2);
-        return { start: base + a, end: base + b, text: String(s.text).trim(), tr: String(s.tr || '').trim() };
-      });
+        return { a, b, start: base + a, end: base + b, text: String(s.text).trim(), tr: String(s.tr || '').trim() };
+      })
+      // 落在静音位置的字幕是编出来的，丢掉（前后留 0.3 秒余量，时间戳不一定准）
+      .filter(s => !lv || maxLevel(lv, s.a - 0.3, s.b + 0.3) >= SILENT)
+      .map(({ a, b, ...s }) => s);
   }
 
   video.addEventListener('seeked', () => { if (nChunks) updateProgress(); });
