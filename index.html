@@ -167,7 +167,7 @@
     <div class="prog-top"><b>字幕进度</b><span id="count">0 / 0</span></div>
     <div id="map" title="点一下跳到那里"><span id="head"></span></div>
     <div id="status"></div>
-    <div class="legend"><span><em style="background:var(--green)"></em>已完成</span><span><em style="background:var(--accent)"></em>识别中</span><span><em style="background:#2a2a2f"></em>待识别</span><span>· 点进度条可以跳转</span></div>
+    <div class="legend"><span><em style="background:var(--green)"></em>已完成</span><span><em style="background:var(--accent)"></em>识别中</span><span><em style="background:#2a2a2f"></em>待识别</span><span><em style="background:var(--red)"></em>失败（点它重试）</span></div>
   </div>
 
   <div class="card reveal d2">
@@ -367,8 +367,17 @@
   mapEl.addEventListener('click', e => {
     if (!video.duration) return;
     const r = mapEl.getBoundingClientRect();
-    video.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * video.duration;
+    const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    video.currentTime = f * video.duration;
     moveHead();
+    // 点到红格（失败跳过的段）就重新排队
+    const i = Math.min(nChunks - 1, Math.floor(f * nChunks));
+    const fail = [];
+    for (let k = Math.max(0, i - 1); k <= Math.min(nChunks - 1, i + 1); k++) if (state[k] === 3) fail.push(k);
+    if (fail.length) {
+      fail.forEach(k => { state[k] = 0; tries[k] = 0; paint(k); });
+      toast(`🔁 第 ${fail.map(k => k + 1).join('、')} 段重新排队了`);
+    }
   });
 
   // ---------- 状态 ----------
@@ -731,6 +740,7 @@
     if (b <= a) return null;
     const parts = [];
     for (let k = a; k < b; k++) {
+      if (m.sizes[k] < 2 || (m.codec === 'aac' && m.sizes[k] > 8184)) continue; // 空帧/超长帧是坏的，跳过
       if (m.codec === 'aac') {
         const len = m.sizes[k] + 7, { profile, fi, ch } = m.asc;
         parts.push(new Uint8Array([0xFF, 0xF1, (profile << 6) | (fi << 2) | (ch >> 2),
@@ -772,6 +782,13 @@
       const s0 = Math.floor(i * CH * sr), s1 = Math.min(pcm.length, Math.floor((i + 1) * CH * sr));
       return levelsOf(pcm, sr, s0, s1, 32768);
     }
+    const r = await decodeChunk(piece);
+    return r && r.lv;
+  }
+  // MP4 段解码成 16k 单声道：拿来测音量，也拿来生成标准 WAV 发给 Gemini（比直接发 AAC 稳）
+  async function decodeChunk(piece) {
+    if (piece.decoded !== undefined) return piece.decoded;
+    piece.decoded = null;
     try {
       const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
       const ctx = new OAC(1, 1, TARGET_SR);
@@ -786,7 +803,8 @@
         mono = new Float32Array(n);
         for (let c = 0; c < ab.numberOfChannels; c++) { const d = ab.getChannelData(c); for (let k = 0; k < n; k++) mono[k] += d[k] / ab.numberOfChannels; }
       }
-      return levelsOf(mono, ab.sampleRate, 0, n, 1);
+      piece.decoded = { lv: levelsOf(mono, ab.sampleRate, 0, n, 1), mono, rate: ab.sampleRate };
+      return piece.decoded;
     } catch (e) { return null; }
   }
 
@@ -814,6 +832,21 @@
       out[i] = v > 1 ? 32767 : v < -1 ? -32768 : v * 32767;
     }
     return out;
+  }
+
+  function wavFromFloat(mono, rate) {
+    const ratio = rate / TARGET_SR, len = Math.floor(mono.length / ratio);
+    const view = new DataView(new ArrayBuffer(44 + len * 2));
+    const w = (o, s) => { for (let k = 0; k < s.length; k++) view.setUint8(o + k, s.charCodeAt(k)); };
+    w(0, 'RIFF'); view.setUint32(4, 36 + len * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, TARGET_SR, true); view.setUint32(28, TARGET_SR * 2, true);
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true); w(36, 'data'); view.setUint32(40, len * 2, true);
+    for (let k = 0; k < len; k++) {
+      const v = mono[Math.floor(k * ratio)];
+      view.setInt16(44 + k * 2, v > 1 ? 32767 : v < -1 ? -32768 : v * 32767, true);
+    }
+    return new Blob([view.buffer], { type: 'audio/wav' });
   }
 
   // 取第 i 段，降到 16k，打包成 wav
@@ -869,7 +902,7 @@
         if (my !== session) return;
         tries[i]++;
         state[i] = tries[i] >= 3 ? 3 : 0; paint(i);
-        setStatus(`第 ${i + 1} 段出错：${err.message}` + (state[i] === 3 ? '（已跳过）' : '（稍后重试）'), true);
+        setStatus(`第 ${i + 1} 段出错：${err.message}` + (state[i] === 3 ? '（已跳过，点进度条上的红格可以重试）' : '（稍后重试）'), true);
         await sleep(err.retryAfter || 3000);
       }
     }
@@ -897,9 +930,10 @@
     const lang = langEl.value.trim() || '简体中文';
     const piece = mp4 ? mp4Chunk(i) : chunkWav(i);
     if (!piece || piece.dur <= 0.05) return [];
-    const { blob, dur, mime, base } = piece;
+    let { blob, dur, mime, base } = piece;
     const lv = await chunkLevels(i, piece);
     if (lv && maxLevel(lv) < SILENT) return []; // 整段静音，不用问 Gemini
+    if (mp4 && piece.decoded) { blob = wavFromFloat(piece.decoded.mono, piece.decoded.rate); mime = 'audio/wav'; }
     const b64 = await blobToB64(blob);
 
     const prev = (segs[i - 1] || []).slice(-3).map(s => s.text).join(' / ');
