@@ -799,6 +799,8 @@
     cancelAnimationFrame(raf);
     if (!isAudio) return;
     if (!dragging) drawBar(video.currentTime || 0);
+    const now = performance.now();
+    if (now - (tick.last || 0) > 100) { tick.last = now; syncList(true); } // 高亮换行更及时
     if (!video.paused) raf = requestAnimationFrame(tick);
   }
   ['loadedmetadata', 'seeked', 'durationchange'].forEach(ev => video.addEventListener(ev, () => { if (!dragging) drawBar(video.currentTime || 0); }));
@@ -881,10 +883,24 @@
   idb.get('bg').then(b => { if (b) showBg(b); });
   video.addEventListener('seeked', () => { activeIdx = -2; syncList(true); });
   // 手动翻看时暂停跟随，出现「回到当前」
-  const stopFollow = () => { follow = false; followBtn.classList.add('show'); };
-  lyrEl.addEventListener('touchstart', stopFollow, { passive: true });
+  // 只有手指/滚轮真的让列表滚动了才算手动翻看；光是碰一下（比如滑整个页面时手指落在列表上）不算
+  let touching = false, resumeT = 0;
+  const resumeFollow = () => { follow = true; followBtn.classList.remove('show'); activeIdx = -2; syncList(true); };
+  const stopFollow = () => {
+    follow = false; followBtn.classList.add('show');
+    clearTimeout(resumeT);
+    resumeT = setTimeout(function again() { // 5 秒没再动，播放中就自动回到当前句
+      if (touching) { resumeT = setTimeout(again, 1000); return; }
+      if (!video.paused) resumeFollow();
+    }, 5000);
+  };
+  lyrEl.addEventListener('touchstart', () => { touching = true; }, { passive: true });
+  lyrEl.addEventListener('touchend', () => { touching = false; }, { passive: true });
+  lyrEl.addEventListener('touchcancel', () => { touching = false; }, { passive: true });
+  lyrEl.addEventListener('scroll', () => { if (touching) stopFollow(); }, { passive: true });
   lyrEl.addEventListener('wheel', stopFollow, { passive: true });
-  followBtn.onclick = () => { follow = true; followBtn.classList.remove('show'); activeIdx = -2; syncList(true); };
+  video.addEventListener('play', () => { if (!follow && !touching) { clearTimeout(resumeT); resumeT = setTimeout(resumeFollow, 5000); } });
+  followBtn.onclick = () => { clearTimeout(resumeT); resumeFollow(); };
 
   // ---------- 全部预生成 ----------
   let fullMode = false;
