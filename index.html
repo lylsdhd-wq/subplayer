@@ -69,6 +69,8 @@
     <button data-mode="src">只看原文</button>
   </div>
 
+  <button id="srtBtn" class="ghost" style="width:100%;margin-top:10px">💾 导出字幕文件（.srt）</button>
+
   <div id="bar"><div></div></div>
   <div id="status"></div>
 </div>
@@ -190,10 +192,31 @@
     try { return JSON.parse(ls.get(cacheKey) || 'null'); } catch (e) { return null; }
   }
 
+  // ---------- 导出 SRT ----------
+  let baseName = 'subtitles';
+  const srtTime = t => {
+    const ms = Math.round(t * 1000);
+    const p = (n, l = 2) => String(n).padStart(l, '0');
+    return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
+  };
+  $('srtBtn').onclick = () => {
+    const all = segs.flat().sort((a, b) => a.start - b.start);
+    if (!all.length) return setStatus('还没有生成好的字幕', true);
+    const srt = all.map((s, k) => `${k + 1}\n${srtTime(s.start)} --> ${srtTime(s.end)}\n${cueText(s)}\n`).join('\n');
+    const url = URL.createObjectURL(new Blob(['﻿' + srt], { type: 'application/x-subrip' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = baseName + '.srt';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    const notDone = state.filter(s => s !== 2).length;
+    setStatus(notDone ? `已导出（还有 ${notDone} 段没生成，导出的是目前已有的部分）` : '已导出完整字幕');
+  };
+
   // ---------- 读取视频 ----------
   $('file').onchange = async e => {
     const file = e.target.files[0];
     if (!file) return;
+    baseName = file.name.replace(/\.[^.]+$/, '');
     const my = ++session;
     pcm = null; state = []; tries = []; segs = []; nChunks = 0; barEl.style.width = '0';
     cacheKey = 'sub_cache:' + file.name + '|' + file.size;
